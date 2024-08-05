@@ -1,20 +1,27 @@
 use tokio::sync::RwLock;
 
+use std::collections::hash_map::Entry;
+use std::collections::hash_map::OccupiedEntry;
+use std::collections::hash_map::VacantEntry;
+use std::future::Future;
 use std::hash::Hash;
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::task::Context;
+use std::task::Poll;
 use std::task::Waker;
 
 struct LightCache<K, V> {
-    waiters: Mutex<HashMap<K, Waker>>,
+    waiters: Mutex<HashMap<K, Vec<Waker>>>,
     map: RwLock<HashMap<K, Arc<V>>>,
 }
 
 impl<K, V> LightCache<K, V>
 where
-    K: Eq + Hash,
+    K: Eq + Hash + Copy,
     V: Sync,
 {
     fn new() -> Self {
@@ -24,7 +31,7 @@ where
         }
     }
 
-    async fn get_or_insert<Q, F, Fut>(&self, key: Q, init: F) -> Arc<V>
+    async fn get_or_insert<Q, F, Fut>(&self, key: K,init: F) -> Arc<V>
     where
         Q: Borrow<K>,
         F: FnOnce() -> Fut,
@@ -34,10 +41,10 @@ where
             return value.clone();
         }
 
-        todo!()
+        GetOrInsertFuture::new(self, key, init).await
     }
 
-    async fn get_or_try_insert<Q, F, Fut, Err>(&self, key: Q, init: F) -> Result<Arc<V>, Err>
+    async fn get_or_try_insert<Q, F, Fut, Err>(&self, key: K,init: F) -> Result<Arc<V>, Err>
     where
         Q: Borrow<K>,
         F: FnOnce() -> Fut,
@@ -47,30 +54,70 @@ where
             return Ok(value.clone());
         }
 
-        todo!()
+        GetOrTryInsertFuture::new(self, key, init).await
     }
 }
 
-struct GetOrInsertFuture<'a, K, V, Q, F> {
+struct GetOrInsertFuture<'a, K, V, F> {
     cache: &'a LightCache<K, V>,
-    key: Q,
+    key: K,
     init: F,
 }
 
-impl<'a, K, V, Q, F> GetOrInsertFuture<'a, K, V, Q, F> {
-    fn new(cache: &'a LightCache<K, V>, key: Q, init: F) -> Self {
+impl<'a, K, V, F> GetOrInsertFuture<'a, K, V, F> {
+    fn new(cache: &'a LightCache<K, V>, key: K, init: F) -> Self {
         GetOrInsertFuture { cache, key, init }
     }
 }
 
-struct GetOrTryInsertFuture<'a, K, V, Q, F> {
+impl<'a, K, V, F, Fut> Future for GetOrInsertFuture<'a, K, V, F>
+where
+K: Eq + Hash + Copy,
+V: Sync,
+F: FnOnce() -> Fut,
+Fut: std::future::Future<Output = V>,
+{
+    type Output = Arc<V>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.cache.waiters.lock().expect("lock not poisoned").entry(self.key) {
+            Entry::Occupied(mut v) => {
+                v.get_mut().push(cx.waker().clone());
+            }
+
+            Entry::Vacant(mut v) => {
+                v.insert(Vec::new());
+            }            
+        }
+
+        
+        todo!()
+    }
+}
+
+struct GetOrTryInsertFuture<'a, K, V, F> {
     cache: &'a LightCache<K, V>,
-    key: Q,
+    key: K,
     init: F,
 }
 
-impl<'a, K, V, Q, F> GetOrTryInsertFuture<'a, K, V, Q, F> {
-    fn new(cache: &'a LightCache<K, V>, key: Q, init: F) -> Self {
+impl<'a, K, V, F> GetOrTryInsertFuture<'a, K, V, F> {
+    fn new(cache: &'a LightCache<K, V>, key: K, init: F) -> Self {
         GetOrTryInsertFuture { cache, key, init }
     }
 }
+
+impl<'a, K, V, F, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, F>
+where
+K: Eq + Hash + Copy,
+V: Sync,
+F: FnOnce() -> Fut,
+Fut: std::future::Future<Output = Result<V, E>>,
+{
+    type Output = Result<Arc<V>, E>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        todo!()
+    }
+}
+// construct a goifut in the goi funct and then await it
