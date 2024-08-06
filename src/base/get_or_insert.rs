@@ -40,7 +40,7 @@ where
 
         match project {
             GetOrInsertFutureProj::Working { cache, key, .. } => {
-                let mut waiters = cache.waiters.lock().expect("lock not poisoned");
+                let mut waiters = cache.waiters.lock().expect("on drop waiters lock not poisoned");
 
                 // notify the wakers and set the node to inactive so another thread can try to insert
                 // note: in the happy path the waiters have been removed, so this may be a None
@@ -48,8 +48,6 @@ where
                     for waker in node.halt() {
                         waker.wake();
                     }
-
-                    node.active = false;
                 }
             }
             GetOrInsertFutureProj::Waiting { .. } => {}
@@ -83,17 +81,15 @@ where
 
                     // the value wasnt in the cache, so lets take the lock so no one else is gonna insert it
                     // and we can insert it
-                    let mut waiters_lock = cache.waiters.lock().expect("lock not poisoned");
+                    let mut waiters_lock = cache.waiters.lock().expect("waiters lock not poisoned");
                     if let Some(value) = cache.map.read().expect("rw lock poisioned").get(&key) {
                         return Poll::Ready(value.clone());
                     }
 
                     // the value is not in the cache
                     // lets check if there are any waiters if not we need to compute this ourselves
-                    //
-                    // note: theres a chance a waker could be pushed more than once here if this gets polled for some reason before the insertion finishes
-                    // this setup is nice though becuase it lets another thread try to insert if the previous insert failed
-                    let fut = match waiters_lock.get_mut(&key) {
+                    // we dont call `init` just yet as it could panic, so lets drop our locks first.
+                    let should_start_working = match waiters_lock.get_mut(&key) {
                         Some(node) => {
                             if node.is_active() {
                                 if let Some(curr_try) = curr_try {
@@ -108,24 +104,27 @@ where
                                 return Poll::Pending;
                             } else {
                                 curr_try.replace(node.activate());
-                                init.take().unwrap()()
+                                true
                             }
                         }
                         None => {
                             waiters_lock.insert(*key, WakerNode::start());
-                            init.take().unwrap()()
+                            true
                         }
                     };
+                    drop(waiters_lock);
 
-                    let working = GetOrInsertFuture::Working {
-                        cache,
-                        key: *key,
-                        fut,
-                    };
-
-                    // saftey: we are moving to the next stage
-                    let _ =
-                        std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
+                    if should_start_working {
+                        let working = GetOrInsertFuture::Working {
+                            cache,
+                            key: *key,
+                            fut: init.take().expect("init is none")(),
+                        };
+    
+                        // saftey: we are moving to the next stage
+                        let _ =
+                            std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
+                    }
                 }
                 GetOrInsertFutureProj::Working { cache, key, fut } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
@@ -140,7 +139,7 @@ where
                         let waiters = cache
                             .waiters
                             .lock()
-                            .expect("lock not poisoned")
+                            .expect("waiters lock not poisoned")
                             .remove(&key);
 
                         if let Some(node) = waiters {
