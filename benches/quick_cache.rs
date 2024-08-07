@@ -1,14 +1,16 @@
 use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::{criterion_group, criterion_main};
+
+use quick_cache::sync::Cache;
+
 use tokio::runtime;
 
 use std::sync::{OnceLock, Mutex};
 
 use light_cache::constants_for_benchmarking::{INSERT_MANY, GET_MANY};
-use light_cache::LightCache;
 
-static CACHE: OnceLock<Mutex<LightCache<usize, usize>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<Cache<usize, usize>>> = OnceLock::new();
 
 // Here we have an async function to benchmark
 async fn insert_many() {
@@ -35,14 +37,14 @@ async fn get_or_insert_many() {
     let cache = CACHE.get().unwrap().lock().unwrap();
 
     for i in 0..GET_MANY {
-        cache.get_or_insert(i, || async { i }).await;
+        cache.get_or_insert_async(&i, async { Ok::<_, ()>(1) }).await.unwrap();
     }
 }
 
-fn clear_cache(amount: usize) {
+fn clear_cache(new_size: usize) {
     let mut cache_ref = CACHE.get().unwrap().lock().unwrap();
 
-    let _ = std::mem::replace(&mut *cache_ref, LightCache::with_capacity(amount));
+    let _ = std::mem::replace(&mut *cache_ref, Cache::new(new_size));
 }
 
 fn bencher(c: &mut Criterion) {
@@ -51,17 +53,17 @@ fn bencher(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    CACHE.get_or_init(|| Mutex::new(LightCache::new()));
+    CACHE.get_or_init(|| Mutex::new(Cache::new(INSERT_MANY)));
 
-    c.bench_function("light cache insert many", |b| b.to_async(&rt).iter(insert_many));
-
-    clear_cache(GET_MANY);
-
-    c.bench_function("light cache insert and lookup", |b| b.to_async(&rt).iter(insert_and_lookup));
+    c.bench_function("quick cache insert many", |b| b.to_async(&rt).iter(insert_many));
 
     clear_cache(GET_MANY);
 
-    c.bench_function("light cache get or insert many", |b| b.to_async(&rt).iter(get_or_insert_many));
+    c.bench_function("quick cache insert and lookup", |b| b.to_async(&rt).iter(insert_and_lookup));
+
+    clear_cache(GET_MANY);
+
+    c.bench_function("quick cache get or insert many", |b| b.to_async(&rt).iter(get_or_insert_many));
 }
 
 criterion_group!(benches, bencher);

@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 pin-project = "1.1.5"
+hashbrown = { version = "0.14", default-features = false, features = ["raw", "ahash"] }
 
 [dev-dependencies]
+quick_cache = "0.6.2"
 tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 moka = { version = "0.12.8", features = ["future"] }
 criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
@@ -17,4 +19,8 @@ harness = false
 
 [[bench]]
 name = "light_cache"
+harness = false
+
+[[bench]]
+name = "quick_cache"
 harness = false
