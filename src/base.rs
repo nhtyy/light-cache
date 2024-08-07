@@ -56,12 +56,17 @@ where
         }
     }
 
-    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, F>
+    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, F, Fut>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, Err>>,
     {
-        todo!()
+        GetOrTryInsertFuture::Waiting {
+            cache: self,
+            key,
+            init: Some(init),
+            curr_try: None,
+        }
     }
 
     pub fn insert(&self, key: K, value: V) -> Option<V> {
