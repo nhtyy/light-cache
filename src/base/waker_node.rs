@@ -1,8 +1,11 @@
 use std::task::Waker;
 
 pub(crate) struct WakerNode {
+    // How many failures have been made to insert the value
     curr_try: usize,
+    // is someone currently trying to insert the value
     active: bool,
+    // wakers to notify when the value is inserted
     pub(crate) wakers: Vec<Waker>,
 }
 

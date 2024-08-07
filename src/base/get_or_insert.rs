@@ -58,11 +58,11 @@ where
 impl<'a, K, V, F, Fut> Future for GetOrInsertFuture<'a, K, V, F, Fut>
 where
     K: Eq + Hash + Copy,
-    V: Sync,
+    V: Clone + Sync,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = V>,
 {
-    type Output = Arc<V>;
+    type Output = V;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
@@ -97,8 +97,7 @@ where
                                     }
                                 }
 
-                                // either this is our first attempt and someone is contesting us
-                                // or the try number has changed and we need to give them our waker again
+                                // someone is currently trying to insert the value, lets wait
                                 node.join(cx.waker().clone());
                                 curr_try.replace(*node.attempts());
 
@@ -129,8 +128,6 @@ where
                 }
                 GetOrInsertFutureProj::Working { cache, key, fut } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
-                        let val = Arc::new(val);
-
                         cache
                             .map
                             .write()
@@ -193,7 +190,7 @@ mod test {
         let key = 1;
         let val = cache.get_or_insert(key, || async { 1 }).await;
 
-        assert_eq!(*val, 1);
+        assert_eq!(val, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -210,9 +207,9 @@ mod test {
 
         let (get1, get2, get3) = tokio::join!(fut1, fut2, fut3);
 
-        assert_eq!(*get1, 1);
-        assert_eq!(*get2, 1);
-        assert_eq!(*get3, 1);
+        assert_eq!(get1, 1);
+        assert_eq!(get2, 1);
+        assert_eq!(get3, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -255,8 +252,8 @@ mod test {
 
         let (get1, get2, get3) = tokio::join!(get1, get2, get3);
 
-        assert_eq!(*get1.unwrap(), 1);
-        assert_eq!(*get2.unwrap(), 1);
-        assert_eq!(*get3.unwrap(), 1);
+        assert_eq!(get1.unwrap(), 1);
+        assert_eq!(get2.unwrap(), 1);
+        assert_eq!(get3.unwrap(), 1);
     }
 }

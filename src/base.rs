@@ -16,7 +16,7 @@ pub struct LightCache<K, V> {
 
 pub struct LightCacheInner<K, V> {
     waiters: Mutex<HashMap<K, WakerNode>>,
-    map: RwLock<HashMap<K, Arc<V>>>,
+    map: RwLock<HashMap<K, V>>,
 }
 
 impl<K, V> LightCache<K, V> {
@@ -41,7 +41,7 @@ impl<K, V> std::ops::Deref for LightCache<K, V> {
 impl<K, V> LightCache<K, V>
 where
     K: Eq + Hash + Copy,
-    V: Sync,
+    V: Clone + Sync,
 {
     pub fn get_or_insert<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, F, Fut>
     where
@@ -64,18 +64,16 @@ where
         todo!()
     }
 
-    pub fn insert(&self, key: K, value: V) -> Option<Arc<V>> {
-        let value = Arc::new(value);
-
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
         // insert directly into the map ignoring another other writers (which may very well subsequently override this value)
         self.map.write().expect("rw lock poisoned").insert(key, value)
     }
 
-    pub fn get(&self, key: K) -> Option<Arc<V>> {
+    pub fn get(&self, key: K) -> Option<V> {
         self.map.read().expect("rw lock poisoned").get(&key).cloned()
     }
 
-    pub fn remove(&self, key: K) -> Option<Arc<V>> {
+    pub fn remove(&self, key: K) -> Option<V> {
         self.map.write().expect("rw lock poisoned").remove(&key)
     }
 }
