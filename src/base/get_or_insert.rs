@@ -93,15 +93,15 @@ where
                         Some(node) => {
                             if node.is_active() {
                                 if let Some(curr_try) = curr_try {
-                                    if node.attempt() == *curr_try {
+                                    if node.attempt() == curr_try {
                                         return Poll::Pending;
                                     }
                                 }
 
                                 // either this is our first attempt and someone is contesting us
                                 // or the try number has changed and we need to give them our waker again
-                                node.wakers.push(cx.waker().clone());
-                                curr_try.replace(node.attempt());
+                                node.join(cx.waker().clone());
+                                curr_try.replace(*node.attempt());
 
                                 return Poll::Pending;
                             } else {
