@@ -89,7 +89,7 @@ where
                     // the value is not in the cache
                     // lets check if there are any waiters if not we need to compute this ourselves
                     // we dont call `init` just yet as it could panic, so lets drop our locks first.
-                    let should_start_working = match waiters_lock.get_mut(&key) {
+                    match waiters_lock.get_mut(&key) {
                         Some(node) => {
                             if node.is_active() {
                                 if let Some(curr_try) = curr_try {
@@ -98,33 +98,32 @@ where
                                     }
                                 }
 
+                                // either this is our first attempt and someone is contesting us
+                                // or the try number has changed and we need to give them our waker again
                                 node.wakers.push(cx.waker().clone());
                                 curr_try.replace(node.attempt());
 
                                 return Poll::Pending;
                             } else {
                                 curr_try.replace(node.activate());
-                                true
                             }
                         }
                         None => {
                             waiters_lock.insert(*key, WakerNode::start());
-                            true
                         }
                     };
+                    // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
 
-                    if should_start_working {
-                        let working = GetOrInsertFuture::Working {
-                            cache,
-                            key: *key,
-                            fut: init.take().expect("init is none")(),
-                        };
-    
-                        // saftey: we are moving to the next stage
-                        let _ =
-                            std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
-                    }
+                    let working = GetOrInsertFuture::Working {
+                        cache,
+                        key: *key,
+                        fut: init.take().expect("init is none")(),
+                    };
+
+                    // saftey: we are moving to the next stage
+                    let _ =
+                        std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
                 }
                 GetOrInsertFutureProj::Working { cache, key, fut } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
