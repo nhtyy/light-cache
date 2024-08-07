@@ -7,4 +7,14 @@ edition = "2021"
 pin-project = "1.1.5"
 
 [dev-dependencies]
-tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+moka = { version = "0.12.8", features = ["future"] }
+criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
+
+[[bench]]
+name = "moka"
+harness = false
+
+[[bench]]
+name = "light_cache"
+harness = false

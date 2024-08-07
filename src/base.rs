@@ -69,11 +69,11 @@ where
         self.map.write().expect("rw lock poisoned").insert(key, value)
     }
 
-    pub fn get(&self, key: K) -> Option<V> {
-        self.map.read().expect("rw lock poisoned").get(&key).cloned()
+    pub fn get(&self, key: &K) -> Option<V> {
+        self.map.read().expect("rw lock poisoned").get(key).cloned()
     }
 
-    pub fn remove(&self, key: K) -> Option<V> {
-        self.map.write().expect("rw lock poisoned").remove(&key)
+    pub fn remove(&self, key: &K) -> Option<V> {
+        self.map.write().expect("rw lock poisoned").remove(key)
     }
 }
