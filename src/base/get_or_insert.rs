@@ -86,14 +86,13 @@ where
                         return Poll::Ready(value.clone());
                     }
 
-                    // the value is not in the cache
                     // lets check if there are any waiters if not we need to compute this ourselves
-                    // we dont call `init` just yet as it could panic, so lets drop our locks first.
+                    // we dont call `init` just yet as it could panic, we need to drop our locks first.
                     match waiters_lock.get_mut(&key) {
                         Some(node) => {
                             if node.is_active() {
                                 if let Some(curr_try) = curr_try {
-                                    if node.attempt() == curr_try {
+                                    if node.attempts() == curr_try {
                                         return Poll::Pending;
                                     }
                                 }
@@ -101,14 +100,17 @@ where
                                 // either this is our first attempt and someone is contesting us
                                 // or the try number has changed and we need to give them our waker again
                                 node.join(cx.waker().clone());
-                                curr_try.replace(*node.attempt());
+                                curr_try.replace(*node.attempts());
 
                                 return Poll::Pending;
                             } else {
+                                // we have the lock and the last person who had it failed to insert it
+                                // so lets signal that we are going to try to insert it
                                 curr_try.replace(node.activate());
                             }
                         }
                         None => {
+                            // we have the lock and no one is contesting us
                             waiters_lock.insert(*key, WakerNode::start());
                         }
                     };

@@ -19,7 +19,8 @@ impl WakerNode {
         self.wakers.push(waker);
     }
 
-    pub(crate) fn attempt(&mut self) -> &usize {
+    // how many tries have been made to insert the value
+    pub(crate) fn attempts(&mut self) -> &usize {
         &self.curr_try
     }
 
