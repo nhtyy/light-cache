@@ -66,6 +66,12 @@ impl<K, V, S: BuildHasher, P> LightCache<K, V, S, P> {
     }
 }
 
+impl<K, V, S, P> LightCache<K, V, S, P> {
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 impl<K, V, S, P> LightCache<K, V, S, P>
 where
     K: Eq + Hash + Copy,
@@ -87,7 +93,7 @@ where
         Fut: std::future::Future<Output = V>,
     {
         let inner = self.get_or_insert_inner(key, init).await;
-        self.policy.on_get_or_insert(&key, self);
+        self.policy.after_get_or_insert(&key, self);
 
         inner
     }
@@ -105,19 +111,19 @@ where
     /// This function doesn't take into account any pending insertions from [`Self::get_or_insert`] or [`Self::get_or_try_insert`]
     /// and will not wait for them to complete, which means it could be overwritten by another task quickly.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        // todo: should we hook this up to the waker system?
+        // todo: should we hook this up to the waitiers?
         // maybe we can kill the task computing the future by writing to the waker node that weve finsihed if its get woken up before the poll finishes
-        self.map.insert(key, value).and_then(|v| {
-            self.policy.on_get_or_insert(&key, self);
-            Some(v)
-        })
+        let v = self.map.insert(key, value);
+        self.policy.after_get_or_insert(&key, self);
+
+        v
     }
 
     /// Try to get a value from the cache
     pub fn get(&self, key: &K) -> Option<V> {
         // todo: should we make this async or introduce a new method to await for pending tasks?
         self.map.get(key).and_then(|v| {
-            self.policy.on_get_or_insert(key, self);
+            self.policy.after_get_or_insert(key, self);
             Some(v)
         })
     }
@@ -128,7 +134,7 @@ where
     /// it will force them to recompute the value and insert it again.
     pub fn remove(&self, key: &K) -> Option<V> {
         self.map.remove(key).and_then(|v| {
-            self.policy.on_remove(key, self);
+            self.policy.after_remove(key, self);
             Some(v)
         })
     }

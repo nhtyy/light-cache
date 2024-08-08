@@ -50,6 +50,12 @@ impl<K, V, S: BuildHasher> LightMap<K, V, S> {
     }
 }
 
+impl<K, V, S> LightMap<K, V, S> {
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.table.read().unwrap().len()).sum()
+    }
+}
+
 impl<K, V, S> LightMap<K, V, S>
 where
     K: Eq + std::hash::Hash,
