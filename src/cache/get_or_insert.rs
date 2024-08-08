@@ -162,12 +162,12 @@ where
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[pin_project::pin_project(project = GetOrTryInsertFutureProj, PinnedDrop)]
-pub enum GetOrTryInsertFuture<'a, K, V, S, F, Fut, E>
+pub enum GetOrTryInsertFuture<'a, K, V, S, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
     Waiting {
-        shard: &'a Shard<K, Result<V, E>>,
+        shard: &'a Shard<K, V>,
         build_hasher: &'a S,
         hash: u64,
         key: K,
@@ -175,7 +175,7 @@ where
         curr_try: Option<usize>,
     },
     Working {
-        shard: &'a Shard<K, Result<V, E>>,
+        shard: &'a Shard<K, V>,
         build_hasher: &'a S,
         hash: u64,
         key: K,
@@ -185,7 +185,7 @@ where
 }
 
 #[pinned_drop]
-impl<'a, K, V, F, S, Fut, E> PinnedDrop for GetOrTryInsertFuture<'a, K, V, F, S, Fut, E>
+impl<'a, K, V, F, S, Fut> PinnedDrop for GetOrTryInsertFuture<'a, K, V, F, S, Fut>
 where
     K: Copy + Eq + Hash,
 {
@@ -210,14 +210,14 @@ where
     }
 }
 
-impl<'a, K, V, F, S, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, F, S, Fut, E>
+impl<'a, K, V, F, S, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, F, S, Fut>
 where
     K: Eq + Hash + Copy,
-    E: Sized + Clone,
     V: Clone + Sync,
     S: BuildHasher,
     F: FnOnce() -> Fut + BuildHasher,
-    Fut: std::future::Future<Output = V>,
+    Fut: std::future::Future<Output = Result<V, E>>,
+    E: Sized + Clone,
 {
     type Output = Result<V, E>;
 
@@ -235,15 +235,8 @@ where
                     // take the lock to make sure no one else is trying to insert the value
                     let mut waiters_lock = shard.waiters.lock().expect("waiters lock not poisoned");
                     if let Some(value) = shard.get(key, *hash) {
-                        match value {
-                            Ok(val) => {
-                                return Poll::Ready(Ok(val));
-                            }
-                            Err(e) => {
-                                return Poll::Ready(Err(e));
-                            }
-                        }
-                    }
+                        return Poll::Ready(Ok(value));
+                    } 
 
                     // lets check if there are any waiters if not we need to compute this ourselves
                     // we dont call `init` just yet as it could panic, we need to drop our locks first.
@@ -276,9 +269,9 @@ where
                     };
                     // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
-
+                           
                     // todo avoid these copies somehow ?
-                    let working = GetOrInsertFuture::Working {
+                    let working = GetOrTryInsertFuture::Working {
                         shard,
                         build_hasher: *build_hasher,
                         hash: *hash,
@@ -297,11 +290,19 @@ where
                     build_hasher,
                     hash,
                 } => {
-                    if let Poll::Ready(val) = fut.poll(cx) {
-                        // we have the value, lets insert it into the cache
-                        let _ = shard.insert(*key, Ok(val.clone()), *hash, *build_hasher);
-                        // the waiters will be alerted on drop
-                        return Poll::Ready(Ok(val));
+                    if let Poll::Ready(value) = fut.poll(cx) {
+                        match value {
+                            Ok(val) => {
+                                // we have the value, lets insert it into the cache
+                                let _ = shard.insert(*key, val.clone(), *hash, *build_hasher);
+                                // the waiters will be alerted on drop
+                                return Poll::Ready(Ok(val));
+                            }
+
+                            Err(e) => {
+                                return Poll::Ready(Err(e));
+                            }
+                        }
                     } else {
                         return Poll::Pending;
                     }
@@ -400,7 +401,7 @@ mod test {
         let cache = LightCache::new();
 
         let key = 1;
-        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Ok(1)});
+        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Ok(1)}).await;
 
         assert_eq!(val, Ok(1));
     }
@@ -412,7 +413,7 @@ mod test {
         let cache = LightCache::new();
 
         let key = 1;
-        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Err(TestError::IntentionalError)});
+        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Err(TestError::IntentionalError)}).await;
 
         assert_eq!(val, Err(TestError::IntentionalError));
     }

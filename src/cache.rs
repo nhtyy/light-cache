@@ -93,12 +93,15 @@ where
         inner
     }
 
-    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> V
+    pub async fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> Result<V, Err>
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce() -> Fut + Unpin,
         Fut: std::future::Future<Output = Result<V, Err>>,
     {
-        todo!()
+        let inner = self.get_or_try_insert_inner(key, init).await;
+        //self.policy.on_get_or_insert(&key, self); todo
+
+        inner
     }
 
     /// Insert a value directly into the cache
@@ -146,6 +149,19 @@ where
         let (hash, shard) = self.map.shard(&key).unwrap();
 
         GetOrInsertFuture::Waiting {
+            shard,
+            key,
+            init: Some(init),
+            hash,
+            build_hasher: &self.map.build_hasher,
+            curr_try: None,
+        }
+    }
+
+    fn get_or_try_insert_inner<F, Fut, E>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, S, F, Fut> {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrTryInsertFuture::Waiting {
             shard,
             key,
             init: Some(init),
