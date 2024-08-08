@@ -41,6 +41,21 @@ async fn get_or_insert_many() {
     }
 }
 
+async fn get_or_insert_many_spawn_tasks() {
+    let cache = CACHE.get().unwrap().lock().unwrap();
+
+    let handles = (0..GET_MANY).map(|i| {
+        let cache = cache.clone();
+        tokio::spawn(async move {
+            cache.get_with(i, async { i }).await;
+        })
+    });
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+}
+
 fn clear_cache(new_size: usize) {
     let mut cache_ref = CACHE.get().unwrap().lock().unwrap();
 
@@ -64,6 +79,10 @@ fn bencher(c: &mut Criterion) {
     clear_cache(GET_MANY);
 
     c.bench_function("moka rs get or insert many", |b| b.to_async(&rt).iter(get_or_insert_many));
+
+    clear_cache(GET_MANY);
+
+    c.bench_function("moka rs get or insert many spawn tasks", |b| b.to_async(&rt).iter(get_or_insert_many_spawn_tasks));
 }
 
 criterion_group!(benches, bencher);

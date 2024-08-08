@@ -3,18 +3,28 @@ name = "light-cache"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+tokio_spawn_policy = ["dep:tokio"]
+
 [dependencies]
 pin-project = "1.1.5"
+hashbrown = { version = "0.14", default-features = false, features = ["raw", "ahash"] }
+tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"], optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+quick_cache = "0.6.2"
 moka = { version = "0.12.8", features = ["future"] }
 criterion = { version = "0.4", features = ["html_reports", "async_tokio"] }
-
-[[bench]]
-name = "moka"
-harness = false
+tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 
 [[bench]]
 name = "light_cache"
+harness = false
+
+# [[bench]]
+# name = "moka"
+# harness = false
+
+[[bench]]
+name = "quick_cache"
 harness = false
