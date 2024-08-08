@@ -5,6 +5,7 @@ use crate::policy::{NoopPolicy, Policy};
 use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
 use hashbrown::hash_map::DefaultHashBuilder;
 
+use std::fmt::Error;
 use std::hash::{BuildHasher, Hash};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ where
         inner
     }
 
-    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, F>
+    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, Err>>,
