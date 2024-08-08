@@ -1,19 +1,16 @@
 use std::task::Waker;
 
-pub(crate) struct WakerNode {
+pub(crate) struct Wakers {
     // How many failures have been made to insert the value
     curr_try: usize,
-    // is someone currently trying to insert the value
-    active: bool,
     // wakers to notify when the value is inserted
     pub(crate) wakers: Vec<Waker>,
 }
 
-impl WakerNode {
+impl Wakers {
     pub(crate) fn start() -> Self {
-        WakerNode {
+        Wakers {
             curr_try: 0,
-            active: true,
             wakers: Vec::new(),
         }
     }
@@ -27,20 +24,10 @@ impl WakerNode {
         &self.curr_try
     }
 
-    pub(crate) fn is_active(&self) -> bool {
-        self.active
-    }
-
-    pub(crate) fn halt(&mut self) -> Vec<Waker> {
-        self.active = false;
-
-        std::mem::take(&mut self.wakers)
-    }
-
-    pub(crate) fn activate(&mut self) -> usize {
-        self.curr_try += 1;
-        self.active = true;
-
-        self.curr_try
+    #[inline]
+    pub(crate) fn alert_all(self) {
+        for waker in self.wakers {
+            waker.wake();
+        }
     }
 }

@@ -1,4 +1,3 @@
-use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::{criterion_group, criterion_main};
 use tokio::runtime;
@@ -39,6 +38,21 @@ async fn get_or_insert_many() {
     }
 }
 
+async fn get_or_insert_many_spawn_tasks() {
+    let cache = CACHE.get().unwrap().lock().unwrap();
+
+    let handles = (0..GET_MANY).map(|i| {
+        let cache = cache.clone();
+        tokio::spawn(async move {
+            cache.get_or_insert(i, || async { i }).await;
+        })
+    });
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+}
+
 fn clear_cache(amount: usize) {
     let mut cache_ref = CACHE.get().unwrap().lock().unwrap();
 
@@ -58,6 +72,10 @@ fn bencher(c: &mut Criterion) {
     clear_cache(GET_MANY);
 
     c.bench_function("light cache insert and lookup", |b| b.to_async(&rt).iter(insert_and_lookup));
+
+    clear_cache(GET_MANY);
+
+    c.bench_function("light cache get or insert many spawned tasks", |b| b.to_async(&rt).iter(get_or_insert_many_spawn_tasks));
 
     clear_cache(GET_MANY);
 

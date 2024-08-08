@@ -6,7 +6,7 @@ use std::sync::{Mutex, RwLock};
 use hashbrown::hash_map::{DefaultHashBuilder, HashMap};
 use hashbrown::raw::RawTable;
 
-use crate::waker_node::WakerNode;
+use crate::waker_node::Wakers;
 
 /// A concurrent hashmap implementation thats always non-blocking.
 ///
@@ -17,7 +17,7 @@ pub struct LightMap<K, V, S = DefaultHashBuilder> {
 }
 
 pub struct Shard<K, V> {
-    pub(crate) waiters: Mutex<HashMap<K, WakerNode>>,
+    pub(crate) waiters: Mutex<HashMap<K, Wakers>>,
     pub(crate) table: RwLock<RawTable<Entry<K, V>>>,
 }
 
@@ -35,6 +35,18 @@ impl<K, V> LightMap<K, V> {
         builder::MapBuilder::new()
             .estimated_size(capacity)
             .build(Default::default())
+    }
+}
+
+impl<K, V, S: BuildHasher> LightMap<K, V, S> {
+    pub fn with_hasher(build_hasher: S) -> Self {
+        builder::MapBuilder::new().build(build_hasher)
+    }
+
+    pub fn with_capacity_and_hasher(capacity: usize, build_hasher: S) -> Self {
+        builder::MapBuilder::new()
+            .estimated_size(capacity)
+            .build(build_hasher)
     }
 }
 

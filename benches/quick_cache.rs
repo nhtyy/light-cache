@@ -1,4 +1,3 @@
-use criterion::BenchmarkId;
 use criterion::Criterion;
 use criterion::{criterion_group, criterion_main};
 
@@ -6,11 +5,30 @@ use quick_cache::sync::Cache;
 
 use tokio::runtime;
 
-use std::sync::{OnceLock, Mutex};
+use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
-use light_cache::constants_for_benchmarking::{INSERT_MANY, GET_MANY};
+use light_cache::constants_for_benchmarking::{GET_MANY, INSERT_MANY};
 
-static CACHE: OnceLock<Mutex<Cache<usize, usize>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<Arc<Cache<usize, usize>>>> = OnceLock::new();
+
+async fn get_or_insert_many_spawn_tasks() {
+    let cache = CACHE.get().unwrap().lock().unwrap();
+
+    let handles = (0..GET_MANY).map(|i| {
+        let cache = cache.clone();
+        tokio::spawn(async move {
+            cache
+                .get_or_insert_async(&i, async { Ok::<_, ()>(1) })
+                .await
+                .unwrap();
+        })
+    });
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+}
 
 // Here we have an async function to benchmark
 async fn insert_many() {
@@ -44,7 +62,7 @@ async fn get_or_insert_many() {
 fn clear_cache(new_size: usize) {
     let mut cache_ref = CACHE.get().unwrap().lock().unwrap();
 
-    let _ = std::mem::replace(&mut *cache_ref, Cache::new(new_size));
+    let _ = std::mem::replace(&mut *cache_ref, Arc::new(Cache::new(new_size)));
 }
 
 fn bencher(c: &mut Criterion) {
@@ -53,17 +71,29 @@ fn bencher(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    CACHE.get_or_init(|| Mutex::new(Cache::new(INSERT_MANY)));
+    CACHE.get_or_init(|| Mutex::new(Arc::new(Cache::new(INSERT_MANY))));
 
-    c.bench_function("quick cache insert many", |b| b.to_async(&rt).iter(insert_many));
-
-    clear_cache(GET_MANY);
-
-    c.bench_function("quick cache insert and lookup", |b| b.to_async(&rt).iter(insert_and_lookup));
+    c.bench_function("quick cache insert many", |b| {
+        b.to_async(&rt).iter(insert_many)
+    });
 
     clear_cache(GET_MANY);
 
-    c.bench_function("quick cache get or insert many", |b| b.to_async(&rt).iter(get_or_insert_many));
+    c.bench_function("quick cache insert and lookup", |b| {
+        b.to_async(&rt).iter(insert_and_lookup)
+    });
+
+    clear_cache(GET_MANY);
+
+    c.bench_function("quick cache get or insert many", |b| {
+        b.to_async(&rt).iter(get_or_insert_many)
+    });
+
+    clear_cache(GET_MANY);
+
+    c.bench_function("quick cache get or insert many spawn tasks", |b| {
+        b.to_async(&rt).iter(get_or_insert_many_spawn_tasks)
+    });
 }
 
 criterion_group!(benches, bencher);

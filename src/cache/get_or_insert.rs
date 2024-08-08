@@ -7,8 +7,8 @@ use std::task::Context;
 use std::task::Poll;
 
 use super::LightCache;
-use super::WakerNode;
 use crate::map::Shard;
+use crate::waker_node::Wakers;
 
 use pin_project::pinned_drop;
 
@@ -16,7 +16,7 @@ use pin_project::pinned_drop;
 #[pin_project::pin_project(project = GetOrInsertFutureProj, PinnedDrop)]
 pub enum GetOrInsertFuture<'a, K, V, S, F, Fut>
 where
-    K: Eq + Hash,
+    K: Copy + Eq + Hash,
 {
     Waiting {
         shard: &'a Shard<K, V>,
@@ -39,21 +39,22 @@ where
 #[pinned_drop]
 impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrInsertFuture<'a, K, V, S, F, Fut>
 where
-    K: Eq + Hash,
+    K: Copy + Eq + Hash,
 {
     fn drop(self: Pin<&mut Self>) {
         let project = self.project();
 
         match project {
             GetOrInsertFutureProj::Working { shard, key, .. } => {
-                let mut waiters = shard.waiters.lock().expect("on drop waiters lock not poisoned");
+                let mut waiters = shard
+                    .waiters
+                    .lock()
+                    .expect("on drop waiters lock not poisoned");
 
                 // notify the wakers and set the node to inactive so another thread can try to insert
                 // note: in the happy path the waiters have been removed, so this may be a None
-                if let Some(node) = waiters.get_mut(key) {
-                    for waker in node.halt() {
-                        waker.wake();
-                    }
+                if let Some(node) = waiters.remove(key) {
+                    node.alert_all();
                 }
             }
             GetOrInsertFutureProj::Waiting { .. } => {}
@@ -82,8 +83,7 @@ where
                     curr_try,
                     build_hasher,
                 } => {
-                    // the value wasnt in the cache, so lets take the lock so no one else is gonna insert it
-                    // and we can insert it
+                    // take the lock to make sure no one else is trying to insert the value
                     let mut waiters_lock = shard.waiters.lock().expect("waiters lock not poisoned");
                     if let Some(value) = shard.get(key, *hash) {
                         return Poll::Ready(value);
@@ -93,32 +93,27 @@ where
                     // we dont call `init` just yet as it could panic, we need to drop our locks first.
                     match waiters_lock.get_mut(key) {
                         Some(node) => {
-                            if node.is_active() {
-                                if let Some(curr_try) = curr_try {
-                                    if node.attempts() == curr_try {
-                                        return Poll::Pending;
-                                    }
+                            if let Some(curr_try) = curr_try {
+                                if node.attempts() == curr_try {
+                                    return Poll::Pending;
                                 }
-
-                                // someone is currently trying to insert the value, lets wait
-                                node.join(cx.waker().clone());
-                                curr_try.replace(*node.attempts());
-
-                                return Poll::Pending;
-                            } else {
-                                // we have the lock and the last person who had it failed to insert it
-                                // so lets signal that we are going to try to insert it
-                                curr_try.replace(node.activate());
                             }
+
+                            // someone is currently trying to insert the value, lets wait
+                            node.join(cx.waker().clone());
+                            curr_try.replace(*node.attempts());
+
+                            return Poll::Pending;
                         }
                         None => {
                             // we have the lock and no one is contesting us
-                            waiters_lock.insert(*key, WakerNode::start());
+                            waiters_lock.insert(*key, Wakers::start());
                         }
                     };
                     // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
 
+                    // todo avoid these copies somehow ?
                     let working = GetOrInsertFuture::Working {
                         shard,
                         build_hasher: *build_hasher,
@@ -131,10 +126,17 @@ where
                     let _ =
                         std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
                 }
-                GetOrInsertFutureProj::Working { shard, key, fut, build_hasher, hash } => {
+                GetOrInsertFutureProj::Working {
+                    shard,
+                    key,
+                    fut,
+                    build_hasher,
+                    hash,
+                } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
                         let _ = shard.insert(*key, val.clone(), *hash, *build_hasher);
 
+                        // take the lock to make sure no one else is trying to insert the value
                         let waiters = shard
                             .waiters
                             .lock()
@@ -142,11 +144,10 @@ where
                             .remove(key);
 
                         if let Some(node) = waiters {
-                            for waker in node.wakers {
-                                waker.wake();
-                            }
+                            node.alert_all();
                         } else {
-                            // saftey: we always insert an empty array for the key and we should be the only one to remove it
+                            // saftey: we always insert an empty array for the key 
+                            // and we should be the only one to remove it since were in working
                             unreachable!("no wakers for key, this is a bug");
                         }
 
