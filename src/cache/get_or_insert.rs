@@ -105,10 +105,18 @@ where
 
                             return Poll::Pending;
                         }
-                        None => {
-                            // we have the lock and no one is contesting us
-                            waiters_lock.insert(*key, Wakers::start());
-                        }
+                        None => match curr_try {
+                            // we have seen a node before but it has been removed
+                            // so we need to increment to tell the next task that the queue has changed
+                            Some(curr_try) => {
+                                *curr_try += 1;
+                                waiters_lock.insert(*key, Wakers::start(*curr_try));
+                            }
+                            None => {
+                                *curr_try = Some(0);
+                                waiters_lock.insert(*key, Wakers::start(0));
+                            }
+                        },
                     };
                     // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
@@ -134,23 +142,10 @@ where
                     hash,
                 } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
+                        // we have the value, lets insert it into the cache
                         let _ = shard.insert(*key, val.clone(), *hash, *build_hasher);
 
-                        // take the lock to make sure no one else is trying to insert the value
-                        let waiters = shard
-                            .waiters
-                            .lock()
-                            .expect("waiters lock not poisoned")
-                            .remove(key);
-
-                        if let Some(node) = waiters {
-                            node.alert_all();
-                        } else {
-                            // saftey: we always insert an empty array for the key 
-                            // and we should be the only one to remove it since were in working
-                            unreachable!("no wakers for key, this is a bug");
-                        }
-
+                        // the waiters will be alerted on drop
                         return Poll::Ready(val);
                     } else {
                         return Poll::Pending;

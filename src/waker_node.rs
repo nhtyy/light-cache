@@ -8,9 +8,9 @@ pub(crate) struct Wakers {
 }
 
 impl Wakers {
-    pub(crate) fn start() -> Self {
+    pub(crate) fn start(curr_try: usize) -> Self {
         Wakers {
-            curr_try: 0,
+            curr_try,
             wakers: Vec::new(),
         }
     }
