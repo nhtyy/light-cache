@@ -64,6 +64,15 @@ impl<K, V, S: BuildHasher, P> LightCache<K, V, S, P> {
             }),
         }
     }
+
+    pub fn from_parts_with_capacity(policy: P, hasher: S, capacity: usize) -> Self {
+        LightCache {
+            inner: Arc::new(LightCacheInner {
+                map: LightMap::with_capacity_and_hasher(capacity, hasher),
+                policy,
+            }),
+        }
+    } 
 }
 
 impl<K, V, S, P> LightCache<K, V, S, P> {
@@ -137,6 +146,10 @@ where
             self.policy.after_remove(key, self);
             Some(v)
         })
+    }
+
+    pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
+        self.map.remove(key)
     }
 }
 

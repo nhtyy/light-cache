@@ -1,4 +1,3 @@
-use hashbrown::HashMap;
 use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},
@@ -6,12 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use super::{
+    linked_arena::{LinkedArena, LinkedNode},
+    Expiry, Policy,
+};
 use crate::LightCache;
 
-use super::Policy;
-
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
-/// Kind of like an unbounded LRU
 pub struct TtlPolicy<K> {
     inner: Arc<Mutex<TtlPolicyInner<K>>>,
 }
@@ -24,155 +24,20 @@ impl<K> Clone for TtlPolicy<K> {
     }
 }
 
-pub struct TtlPolicyInner<K> {
+pub struct TtlExpiry {
     ttl: Duration,
-    idx_of: HashMap<K, usize>,
-    keys: Vec<TtlNode<K>>,
-    start_idx: Option<usize>,
-    end_idx: Option<usize>,
+}
+
+pub struct TtlPolicyInner<K> {
+    arena: LinkedArena<K, TtlNode<K>, TtlExpiry>,
 }
 
 impl<K> TtlPolicy<K> {
     pub fn new(ttl: Duration) -> Self {
         TtlPolicy {
             inner: Arc::new(Mutex::new(TtlPolicyInner {
-                ttl,
-                idx_of: HashMap::new(),
-                keys: Vec::new(),
-                start_idx: None,
-                end_idx: None,
+                arena: LinkedArena::new(TtlExpiry { ttl }),
             })),
-        }
-    }
-}
-
-impl<K: Copy + Eq + Hash> TtlPolicyInner<K> {
-    fn try_to_clear<V, S>(&mut self, cache: &LightCache<K, V, S, TtlPolicy<K>>)
-    where
-        V: Clone + Sync,
-        S: BuildHasher,
-    {
-        if let Some(starting_end_idx) = self.end_idx {
-            let mut new_end_idx = starting_end_idx;
-
-            loop {
-                let end = self.keys.get(new_end_idx).unwrap();
-                if end.duration_since_last_touched() > self.ttl {
-                    if let Some(parent) = end.parent {
-                        let len = self.remove_node(new_end_idx, cache);
-    
-                        // if the parent node is the end of the buffer we
-                        // know its gonna get moved to the current slot so just continue the loop
-                        if parent != len {
-                            new_end_idx = parent;
-                        }
-                    } else {
-                        self.end_idx = None;
-                        self.start_idx = None;
-                        self.keys.clear();
-                        self.idx_of.clear();
-    
-                        return;
-                    }
-                } else {
-                    break;
-                }           
-            }
-
-            if new_end_idx != starting_end_idx {
-                self.end_idx = Some(new_end_idx);
-            }
-        }
-    }
-
-    // removes the node at the given index, without updating the start or end idx
-    // returns the new length of the keys vec
-    fn remove_node<V, S>(&mut self, idx: usize, cache: &LightCache<K, V, S, TtlPolicy<K>>) -> usize
-    where
-        V: Clone + Sync,
-        S: BuildHasher,
-    {
-        self.unlink_node(idx);
-
-        let removed = self.keys.swap_remove(idx);
-        self.idx_of.remove(&removed.key);
-        cache.remove(&removed.key);
-
-        let len = self.keys.len();
-        if self.keys.len() > 1 {
-            self.relink_node(idx);
-        }
-
-        len
-    }
-}
-
-impl<K: Copy + Eq + Hash> TtlPolicyInner<K> {
-    // Insert a new node at the front of the list
-    // cheaper than inserting, and relinking front
-    fn insert_new_key(&mut self, key: K) {
-        debug_assert!(self.idx_of.get(&key).is_none());
-
-        let new_start = self.keys.len();
-        self.idx_of.insert(key, new_start);
-
-        if let Some(old_start) = self.start_idx {
-            self.keys.push(TtlNode::new(key, None, Some(old_start)));
-            self.keys[old_start].parent = Some(new_start);
-        } else {
-            self.keys.push(TtlNode::new(key, None, None));
-            self.end_idx = Some(new_start);
-        }
-
-        self.start_idx = Some(new_start);
-    }
-
-    /// Ensures the node at idx has the correct parent and child relationships
-    fn relink_node(&mut self, idx: usize) {
-        if let Some(node) = self.keys.get(idx) {
-            let parent = node.parent;
-            let child = node.child;
-
-            if let Some(parent) = parent {
-                self.keys[parent].child = Some(idx);
-            } else {
-                self.start_idx = Some(idx);
-            }
-
-            if let Some(child) = child {
-                self.keys[child].parent = Some(idx);
-            }
-        }
-    }
-
-    /// If you think of the nodes as a doubly linked list, this function will remove the node at idx
-    /// and pass the parent and child relationships to each other if they exist
-    /// # Panics
-    /// If the node at idx doesnt exist
-    fn unlink_node(&mut self, idx: usize) {
-        let node = self.keys.get(idx).unwrap();
-        let parent = node.parent;
-        let child = node.child;
-
-        if let Some(parent) = parent {
-            self.keys[parent].child = child;
-        }
-
-        if let Some(child) = child {
-            self.keys[child].parent = parent;
-        }
-    }
-
-    fn link_new_front(&mut self, new: usize) {
-        self.unlink_node(new);
-
-        let node = self.keys.get_mut(new).unwrap();
-        node.child = self.start_idx;
-        node.parent = None;
-        node.last_touched = Instant::now();
-
-        if let Some(old) = self.start_idx.replace(new) {
-            self.keys[old].parent = Some(new);
         }
     }
 }
@@ -182,33 +47,84 @@ where
     K: Copy + Eq + Hash,
     V: Clone + Sync,
 {
-    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
-        let mut lock = self.inner.lock().unwrap();
-        if let Some(new_front) = lock.idx_of.get(key).copied() {
-            // store the current parent of the new front since this will be the new end
-            // we can just skip it if its already the front (no parent)
-            if let Some(new_front_old_parent) = lock.keys[new_front].parent {
-                lock.link_new_front(new_front);
+    type Node = TtlNode<K>;
+    type Expiry = TtlExpiry;
 
-                if new_front == lock.end_idx.unwrap() {
-                    lock.end_idx = Some(new_front_old_parent);
-                }
-            }
+    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
+        let mut policy = self.inner.lock().unwrap();
+
+        if let Some(idx) = policy.arena.idx_of.get(key).copied() {
+            let node = &mut policy.arena.nodes[idx];
+            node.last_touched = Instant::now();
+
+            policy.arena.move_to_head(idx);
         } else {
-            lock.insert_new_key(*key);
+            policy.arena.insert_head(*key);
         }
 
-        lock.try_to_clear(cache);
+        policy.arena.clear_expired(cache);
     }
 
-    fn after_remove<S>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {}
+    fn after_remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
+        let mut policy = self.inner.lock().unwrap();
+
+        if let None = policy.arena.remove_item(key, cache) {
+            unreachable!("Key should have been in the cache");
+        }
+
+        policy.arena.clear_expired(cache);
+    }
 }
 
-struct TtlNode<K> {
+pub struct TtlNode<K> {
     key: K,
     last_touched: Instant,
     parent: Option<usize>,
     child: Option<usize>,
+}
+
+impl<K> Expiry<TtlNode<K>> for TtlExpiry {
+    fn is_expired(&self, node: &TtlNode<K>) -> bool {
+        node.duration_since_last_touched() > self.ttl
+    }
+}
+
+impl<K> LinkedNode<K, TtlExpiry> for TtlNode<K>
+where
+    K: Copy + Eq + Hash,
+{
+    fn new(key: K, parent: Option<usize>, child: Option<usize>) -> Self {
+        TtlNode {
+            key,
+            last_touched: Instant::now(),
+            parent,
+            child,
+        }
+    }
+
+    fn item(&self) -> &K {
+        &self.key
+    }
+
+    fn parent(&self) -> Option<usize> {
+        self.parent
+    }
+
+    fn child(&self) -> Option<usize> {
+        self.child
+    }
+
+    fn set_parent(&mut self, parent: Option<usize>) {
+        self.parent = parent;
+    }
+
+    fn set_child(&mut self, child: Option<usize>) {
+        self.child = child;
+    }
+
+    fn should_evict(&self, arena: &LinkedArena<K, Self, TtlExpiry>) -> bool {
+        arena.expiry.is_expired(self)
+    }
 }
 
 impl<K> Debug for TtlNode<K> {
@@ -275,18 +191,18 @@ mod test {
         let cache = cache::<i32, i32>(duration_seconds(1));
 
         insert_n(&cache, 5);
-        
+
         sleep_seconds(1);
-        
+
         insert_n(&cache, 2);
 
         // 1 should be removed by now
         assert_eq!(cache.len(), 2);
         let policy = cache.policy.inner.lock().unwrap();
 
-        assert_eq!(policy.idx_of.keys().len(), 2);
-        assert_eq!(policy.start_idx, Some(1));
-        assert_eq!(policy.end_idx, Some(0));
+        assert_eq!(policy.arena.nodes.len(), 2);
+        assert_eq!(policy.arena.head, Some(1));
+        assert_eq!(policy.arena.tail, Some(0));
     }
 
     #[test]
@@ -305,5 +221,23 @@ mod test {
         sleep_seconds(1);
 
         insert_n(&cache, 2);
+
+        let policy = cache.policy.inner.lock().unwrap();
+        assert_eq!(policy.arena.nodes.len(), 4);
+    }
+
+    #[test]
+    fn test_basic_scenario_3() {
+        let cache = cache::<i32, i32>(duration_seconds(1));
+
+        insert_n(&cache, 10);
+
+        cache.remove(&0);
+
+        sleep_seconds(2);
+
+        insert_n(&cache, 2);
+
+        assert_eq!(cache.len(), 2);
     }
 }
