@@ -7,36 +7,38 @@ use std::{
 
 use super::{
     linked_arena::{LinkedArena, LinkedNode},
-    Expiry, Policy,
+    Policy,
 };
 use crate::LightCache;
 
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
+/// 
+/// If a value is accessed it will be moved to the front of the cache and thus not be removed until after the ttl
+/// If the values may become stale before the ttl is exceeded, consider using a refresh policy
 pub struct TtlPolicy<K> {
+    ttl: Duration,
     inner: Arc<Mutex<TtlPolicyInner<K>>>,
 }
 
 impl<K> Clone for TtlPolicy<K> {
     fn clone(&self) -> Self {
         TtlPolicy {
+            ttl: self.ttl,
             inner: self.inner.clone(),
         }
     }
 }
 
-pub struct TtlExpiry {
-    ttl: Duration,
-}
-
 pub struct TtlPolicyInner<K> {
-    arena: LinkedArena<K, TtlNode<K>, TtlExpiry>,
+    arena: LinkedArena<K, TtlNode<K>>,
 }
 
 impl<K> TtlPolicy<K> {
     pub fn new(ttl: Duration) -> Self {
         TtlPolicy {
+            ttl,
             inner: Arc::new(Mutex::new(TtlPolicyInner {
-                arena: LinkedArena::new(TtlExpiry { ttl }),
+                arena: LinkedArena::new(),
             })),
         }
     }
@@ -48,21 +50,25 @@ where
     V: Clone + Sync,
 {
     type Node = TtlNode<K>;
-    type Expiry = TtlExpiry;
 
-    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
+    fn before_get_or_insert<S: BuildHasher>(&self, _key: &K, cache: &LightCache<K, V, S, Self>) {
+        let mut policy = self.inner.lock().unwrap();
+
+        policy.arena.clear_expired(cache);   
+    }
+
+    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, _cache: &LightCache<K, V, S, Self>) {
         let mut policy = self.inner.lock().unwrap();
 
         if let Some(idx) = policy.arena.idx_of.get(key).copied() {
-            let node = &mut policy.arena.nodes[idx];
+            // unwrap: we just checked that the key is in the cache
+            let node = policy.arena.nodes.get_mut(idx).unwrap();
             node.last_touched = Instant::now();
 
             policy.arena.move_to_head(idx);
         } else {
             policy.arena.insert_head(*key);
         }
-
-        policy.arena.clear_expired(cache);
     }
 
     fn after_remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
@@ -74,6 +80,10 @@ where
 
         policy.arena.clear_expired(cache);
     }
+
+    fn is_expired(&self, node: &TtlNode<K>) -> bool {
+        self.ttl < node.duration_since_last_touched()
+    }
 }
 
 pub struct TtlNode<K> {
@@ -83,13 +93,7 @@ pub struct TtlNode<K> {
     child: Option<usize>,
 }
 
-impl<K> Expiry<TtlNode<K>> for TtlExpiry {
-    fn is_expired(&self, node: &TtlNode<K>) -> bool {
-        node.duration_since_last_touched() > self.ttl
-    }
-}
-
-impl<K> LinkedNode<K, TtlExpiry> for TtlNode<K>
+impl<K> LinkedNode<K> for TtlNode<K>
 where
     K: Copy + Eq + Hash,
 {
@@ -106,24 +110,20 @@ where
         &self.key
     }
 
-    fn parent(&self) -> Option<usize> {
+    fn prev(&self) -> Option<usize> {
         self.parent
     }
 
-    fn child(&self) -> Option<usize> {
+    fn next(&self) -> Option<usize> {
         self.child
     }
 
-    fn set_parent(&mut self, parent: Option<usize>) {
+    fn set_prev(&mut self, parent: Option<usize>) {
         self.parent = parent;
     }
 
-    fn set_child(&mut self, child: Option<usize>) {
+    fn set_next(&mut self, child: Option<usize>) {
         self.child = child;
-    }
-
-    fn should_evict(&self, arena: &LinkedArena<K, Self, TtlExpiry>) -> bool {
-        arena.expiry.is_expired(self)
     }
 }
 
@@ -138,15 +138,6 @@ impl<K> Debug for TtlNode<K> {
 }
 
 impl<K> TtlNode<K> {
-    fn new(key: K, parent: Option<usize>, child: Option<usize>) -> Self {
-        TtlNode {
-            key,
-            last_touched: Instant::now(),
-            parent,
-            child,
-        }
-    }
-
     fn duration_since_last_touched(&self) -> Duration {
         Instant::now().duration_since(self.last_touched)
     }

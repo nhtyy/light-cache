@@ -3,7 +3,7 @@ mod get_or_insert;
 use crate::map::LightMap;
 use crate::policy::{NoopPolicy, Policy};
 use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
-use hashbrown::hash_map::DefaultHashBuilder;
+pub use hashbrown::hash_map::DefaultHashBuilder;
 
 use std::hash::{BuildHasher, Hash};
 use std::ops::Deref;
@@ -72,7 +72,7 @@ impl<K, V, S: BuildHasher, P> LightCache<K, V, S, P> {
                 policy,
             }),
         }
-    } 
+    }
 }
 
 impl<K, V, S, P> LightCache<K, V, S, P> {
@@ -101,7 +101,10 @@ where
         F: FnOnce() -> Fut + Unpin,
         Fut: std::future::Future<Output = V>,
     {
+        self.policy.before_get_or_insert(&key, self);
+
         let inner = self.get_or_insert_inner(key, init).await;
+
         self.policy.after_get_or_insert(&key, self);
 
         inner
@@ -120,9 +123,10 @@ where
     /// This function doesn't take into account any pending insertions from [`Self::get_or_insert`] or [`Self::get_or_try_insert`]
     /// and will not wait for them to complete, which means it could be overwritten by another task quickly.
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        // todo: should we hook this up to the waitiers?
-        // maybe we can kill the task computing the future by writing to the waker node that weve finsihed if its get woken up before the poll finishes
+        self.policy.before_get_or_insert(&key, self);
+
         let v = self.map.insert(key, value);
+
         self.policy.after_get_or_insert(&key, self);
 
         v
@@ -130,7 +134,8 @@ where
 
     /// Try to get a value from the cache
     pub fn get(&self, key: &K) -> Option<V> {
-        // todo: should we make this async or introduce a new method to await for pending tasks?
+        self.policy.before_get_or_insert(key, self);
+
         self.map.get(key).and_then(|v| {
             self.policy.after_get_or_insert(key, self);
             Some(v)
@@ -161,6 +166,12 @@ where
     P: Policy<K, V>,
 {
     fn get_or_insert_inner<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, F, Fut> {
+        // happy path, the value is already in the cache
+        // this will slow down benchmarking but should speed up real world usage
+        if let Some(value) = self.map.get(&key) {
+            return GetOrInsertFuture::Ready(Some(value));
+        }
+
         let (hash, shard) = self.map.shard(&key).unwrap();
 
         GetOrInsertFuture::Waiting {

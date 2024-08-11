@@ -4,13 +4,12 @@ use hashbrown::HashMap;
 
 use crate::LightCache;
 
-use super::{Expiry, Policy};
+use super::Policy;
 
 /// A doubly linked list arena
-/// 
+///
 /// Useful for creating various caching policies
-pub(crate) struct LinkedArena<I, N, E> {
-    pub(crate) expiry: E,
+pub(crate) struct LinkedArena<I, N> {
     pub(crate) idx_of: HashMap<I, usize>,
     pub(crate) nodes: Vec<N>,
     pub(crate) head: Option<usize>,
@@ -18,10 +17,9 @@ pub(crate) struct LinkedArena<I, N, E> {
     _phantom: std::marker::PhantomData<I>,
 }
 
-impl<I, N, E> LinkedArena<I, N, E> {
-    pub fn new(expiry: E) -> Self {
+impl<I, N> LinkedArena<I, N> {
+    pub fn new() -> Self {
         LinkedArena {
-            expiry,
             idx_of: HashMap::new(),
             nodes: Vec::new(),
             head: None,
@@ -31,7 +29,7 @@ impl<I, N, E> LinkedArena<I, N, E> {
     }
 }
 
-pub trait LinkedNode<I, E>
+pub trait LinkedNode<I>
 where
     Self: Sized,
     I: Copy + Hash + Eq,
@@ -39,60 +37,74 @@ where
     fn new(item: I, parent: Option<usize>, child: Option<usize>) -> Self;
     fn item(&self) -> &I;
 
-    fn parent(&self) -> Option<usize>;
-    fn child(&self) -> Option<usize>;
+    fn prev(&self) -> Option<usize>;
+    fn next(&self) -> Option<usize>;
 
-    fn set_parent(&mut self, parent: Option<usize>);
-    fn set_child(&mut self, child: Option<usize>);
+    fn set_prev(&mut self, parent: Option<usize>);
+    fn set_next(&mut self, child: Option<usize>);
 
-    fn should_evict(&self, arena: &LinkedArena<I, Self, E>) -> bool;
+    fn should_evict<V, S, P>(&self, cache: &LightCache<I, V, S, P>) -> bool
+    where
+        V: Clone + Sync,
+        S: BuildHasher,
+        P: Policy<I, V, Node = Self>,
+    {
+        cache.policy.is_expired(self)
+    }
 }
 
-impl<I, N, E> LinkedArena<I, N, E>
+impl<I, N> LinkedArena<I, N>
 where
-    N: LinkedNode<I, E>,
+    N: LinkedNode<I>,
     I: Copy + Hash + Eq,
 {
     // Insert a new node at the front of the list
     pub(crate) fn insert_head(&mut self, key: I) {
         debug_assert!(self.idx_of.get(&key).is_none());
 
-        let new_start = self.nodes.len();
-        self.idx_of.insert(key, new_start);
+        let new_head = self.nodes.len();
+        self.idx_of.insert(key, new_head);
 
-        if let Some(old_start) = self.head {
-            self.nodes.push(N::new(key, None, Some(old_start)));
+        if let Some(old_head) = self.head {
+            self.nodes.push(N::new(key, None, Some(old_head)));
 
-            // unwrap: we should have a valid old head idx
-            self.nodes
-                .get_mut(old_start)
-                .unwrap()
-                .set_parent(Some(new_start));
+            // saftey: we should have a valid old head idx
+            unsafe {
+                self.nodes
+                    .get_unchecked_mut(old_head)
+                    .set_prev(Some(new_head));
+            }
         } else {
             self.nodes.push(N::new(key, None, None));
-            self.tail = Some(new_start);
+            self.tail = Some(new_head);
         }
 
-        self.head = Some(new_start);
+        self.head = Some(new_head);
     }
 
     /// Ensures the node at idx has the correct parent and child relationships
     ///
     /// # Note:
     /// noop if the idx is out of bounds
-    pub(crate) fn relink(&mut self, idx: usize) {
+    fn relink(&mut self, idx: usize) {
         if let Some(node) = self.nodes.get(idx) {
-            let parent = node.parent();
-            let child = node.child();
+            let prev = node.prev();
+            let next = node.next();
 
-            if let Some(parent) = parent {
-                self.nodes.get_mut(parent).unwrap().set_child(Some(idx));
+            if let Some(parent) = prev {
+                // saftey: the parent indexes are always valid in arena
+                unsafe {
+                    self.nodes.get_unchecked_mut(parent).set_next(Some(idx));
+                }
             } else {
                 self.head = Some(idx);
             }
 
-            if let Some(child) = child {
-                self.nodes.get_mut(child).unwrap().set_parent(Some(idx));
+            if let Some(child) = next {
+                // saftey: the child indexes are always valid in arena
+                unsafe {
+                    self.nodes.get_unchecked_mut(child).set_prev(Some(idx));
+                }
             } else {
                 self.tail = Some(idx);
             }
@@ -104,20 +116,24 @@ where
     ///
     /// # Panics
     /// if idx is out of bounds
-    pub(crate) fn unlink(&mut self, idx: usize) {
-        let node = self.nodes.get(idx).unwrap();
-        let parent = node.parent();
-        let child = node.child();
+    fn unlink(&mut self, idx: usize) {
+        let node = self.nodes.get(idx).expect("Invalid index to unlink");
+        let parent = node.prev();
+        let child = node.next();
 
-        // unwraps: we should have a valid parent and child idx
+        // saftey: we should have a valid parent and child idx
         if let Some(parent) = parent {
-            self.nodes.get_mut(parent).unwrap().set_child(child);
+            unsafe {
+                self.nodes.get_unchecked_mut(parent).set_next(child);
+            }
         } else {
             self.head = child;
         }
 
         if let Some(child) = child {
-            self.nodes.get_mut(child).unwrap().set_parent(parent);
+            unsafe {
+                self.nodes.get_unchecked_mut(child).set_prev(parent);
+            }
         } else {
             self.tail = parent;
         }
@@ -130,22 +146,24 @@ where
     pub(crate) fn move_to_head(&mut self, new_head: usize) {
         self.unlink(new_head);
 
-        let node = self.nodes.get_mut(new_head).unwrap();
-        node.set_child(self.head);
-        node.set_parent(None);
+        // saftey: unlink checks that the idx is valid
+        let node = unsafe { self.nodes.get_unchecked_mut(new_head) };
+        node.set_next(self.head);
+        node.set_prev(None);
 
         if let Some(old) = self.head.replace(new_head) {
-            // unwrap: we should have a valid old head idx
-            self.nodes.get_mut(old).unwrap().set_parent(Some(new_head));
+            unsafe {
+                // unwrap: we should have a valid old head idx
+                self.nodes.get_unchecked_mut(old).set_prev(Some(new_head));
+            }
         }
     }
 }
 
-impl<I, N, E> LinkedArena<I, N, E>
+impl<I, N> LinkedArena<I, N>
 where
-    N: LinkedNode<I, E>,
+    N: LinkedNode<I>,
     I: Copy + Hash + Eq,
-    E: Expiry<N>,
 {
     /// Remove the node from the given index, updating the start or end bounds as needed
     /// and returning the removed node.
@@ -154,11 +172,15 @@ where
     ///
     /// # Panics
     /// IF idx is out of bounds
-    pub(crate) fn remove_item<V, S, P>(&mut self, item: &I, cache: &LightCache<I, V, S, P>) -> Option<(usize, N)>
+    pub(crate) fn remove_item<V, S, P>(
+        &mut self,
+        item: &I,
+        cache: &LightCache<I, V, S, P>,
+    ) -> Option<(usize, N)>
     where
         V: Clone + Sync,
         S: BuildHasher,
-        P: Policy<I, V, Expiry = E>,
+        P: Policy<I, V>,
     {
         if let Some(idx) = self.idx_of.get(item).copied() {
             Some(self.remove(idx, cache))
@@ -173,13 +195,18 @@ where
     /// This method will also call remove on the cache even if already done
     ///
     /// # Panics
-    /// IF idx is out of bounds
-    pub(crate) fn remove<V, S, P>(&mut self, idx: usize, cache: &LightCache<I, V, S, P>) -> (usize, N)
+    /// If idx is out of bounds
+    pub(crate) fn remove<V, S, P>(
+        &mut self,
+        idx: usize,
+        cache: &LightCache<I, V, S, P>,
+    ) -> (usize, N)
     where
         V: Clone + Sync,
         S: BuildHasher,
-        P: Policy<I, V, Expiry = E>,
-    {
+        P: Policy<I, V>,
+    {   
+        // panics if the idx is out of bounds
         self.unlink(idx);
 
         let removed = self.nodes.swap_remove(idx);
@@ -202,15 +229,19 @@ where
         (len, removed)
     }
 
+    /// # Note
+    ///
+    /// This function assumes the list is sorted and that any expired nodes are at the end of the list
     pub(crate) fn clear_expired<V, S, P>(&mut self, cache: &LightCache<I, V, S, P>)
     where
         V: Clone + Sync,
         S: BuildHasher,
-        P: Policy<I, V, Expiry = E>,
+        P: Policy<I, V, Node = N>,
     {
         loop {
             if let Some(tail) = self.tail {
-                if self.nodes.get(tail).unwrap().should_evict(self) {
+                // saftey: we should have a valid tail index
+                if unsafe { self.nodes.get_unchecked(tail).should_evict(cache) } {
                     self.remove(tail, cache);
                 } else {
                     break;

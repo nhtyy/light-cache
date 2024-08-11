@@ -8,7 +8,7 @@ use std::task::Poll;
 
 use super::LightCache;
 use crate::map::Shard;
-use crate::waker_node::Wakers;
+use crate::map::Wakers;
 
 use pin_project::pinned_drop;
 
@@ -34,7 +34,9 @@ where
         #[pin]
         fut: Fut,
     },
+    Ready(Option<V>),
 }
+
 
 #[pinned_drop]
 impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrInsertFuture<'a, K, V, S, F, Fut>
@@ -57,7 +59,7 @@ where
                     node.alert_all();
                 }
             }
-            GetOrInsertFutureProj::Waiting { .. } => {}
+            _ => {}
         }
     }
 }
@@ -150,6 +152,9 @@ where
                     } else {
                         return Poll::Pending;
                     }
+                },
+                GetOrInsertFutureProj::Ready(v) => {
+                    return Poll::Ready(v.take().expect("value is none"));
                 }
             }
         }
@@ -169,7 +174,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<V, E>>,
 {
-    type Output = Result<Arc<V>, E>;
+    type Output = Result<V, E>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         todo!()

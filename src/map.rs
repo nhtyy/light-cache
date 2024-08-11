@@ -6,7 +6,8 @@ use std::sync::{Mutex, RwLock};
 use hashbrown::hash_map::{DefaultHashBuilder, HashMap};
 use hashbrown::raw::RawTable;
 
-use crate::waker_node::Wakers;
+mod waker_node;
+pub(crate) use waker_node::Wakers;
 
 /// A concurrent hashmap implementation thats always non-blocking.
 ///
