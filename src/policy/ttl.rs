@@ -9,10 +9,10 @@ use super::{
     linked_arena::{LinkedArena, LinkedNode},
     Policy,
 };
-use crate::LightCache;
+use crate::{cache::GetOrInsertFuture, LightCache};
 
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
-/// 
+///
 /// If a value is accessed it will be moved to the front of the cache and thus not be removed until after the ttl
 /// If the values may become stale before the ttl is exceeded, consider using a refresh policy
 pub struct TtlPolicy<K> {
@@ -51,34 +51,69 @@ where
 {
     type Node = TtlNode<K>;
 
-    fn before_get_or_insert<S: BuildHasher>(&self, _key: &K, cache: &LightCache<K, V, S, Self>) {
+    fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         let mut policy = self.inner.lock().unwrap();
 
-        policy.arena.clear_expired(cache);   
+        policy.arena.clear_expired(cache);
+        if let Some((idx, node)) = policy.arena.get_node_mut(key) {
+            node.last_touched = Instant::now();
+
+            policy.arena.move_to_head(idx);
+        }
+
+        cache.get_no_policy(key)
     }
 
-    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, _cache: &LightCache<K, V, S, Self>) {
+    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) {
         let mut policy = self.inner.lock().unwrap();
 
-        if let Some(idx) = policy.arena.idx_of.get(key).copied() {
-            // unwrap: we just checked that the key is in the cache
-            let node = policy.arena.nodes.get_mut(idx).unwrap();
+        policy.arena.clear_expired(cache);
+        if let Some((idx, node)) = policy.arena.get_node_mut(&key) {
             node.last_touched = Instant::now();
 
             policy.arena.move_to_head(idx);
         } else {
-            policy.arena.insert_head(*key);
+            policy.arena.insert_head(key);
         }
+
+        cache.insert_no_policy(key, value);
     }
 
-    fn after_remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) {
+    fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         let mut policy = self.inner.lock().unwrap();
 
-        if let None = policy.arena.remove_item(key, cache) {
-            unreachable!("Key should have been in the cache");
-        }
+        // theres a chance were removing when this key is expired so lets just take it now for safekeeping
+        let v = cache.remove_no_policy(key);
 
         policy.arena.clear_expired(cache);
+        policy.arena.remove_item(key);
+
+        v
+    }
+
+    fn get_or_insert<'a, S, F, Fut>(
+        &self,
+        key: K,
+        cache: &'a LightCache<K, V, S, Self>,
+        init: F,
+    ) -> GetOrInsertFuture<'a, K, V, S, F, Fut>
+    where
+        S: BuildHasher,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = V>,
+    {
+        let mut policy = self.inner.lock().unwrap();
+
+        policy.arena.clear_expired(cache);
+        if let Some((idx, node)) = policy.arena.get_node_mut(&key) {
+            node.last_touched = Instant::now();
+
+            policy.arena.move_to_head(idx);
+        } else {
+            policy.arena.insert_head(key);
+        }
+
+        cache.get_or_insert_no_policy(key, init)
     }
 
     fn is_expired(&self, node: &TtlNode<K>) -> bool {

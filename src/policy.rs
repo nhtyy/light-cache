@@ -1,5 +1,7 @@
-use std::hash::BuildHasher;
+use std::future::Future;
+use std::hash::{BuildHasher, Hash};
 
+use crate::cache::get_or_insert::GetOrInsertFuture;
 use crate::LightCache;
 
 pub mod noop;
@@ -15,19 +17,23 @@ pub trait Policy<K, V>: Clone {
     /// The interal type used by this policy to track keys
     type Node;
 
-    /// Called before a value is inserted into the cache
-    /// Or the key is attempted to be retrieved from the cache
-    /// 
-    /// In other words: the key may or may not be in cache at this point
-    fn before_get_or_insert<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>);
+    fn get_or_insert<'a, S, F, Fut>(
+        &self,
+        key: K,
+        cache: &'a LightCache<K, V, S, Self>,
+        init: F,
+    ) -> GetOrInsertFuture<'a, K, V, S, F, Fut>
+    where
+        K: Eq + Hash + Copy,
+        S: BuildHasher,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>;
 
-    /// Called after a successful retrieval of a value from the cache
-    /// Or after a value has been inserted into the cache
-    /// 
-    /// In other words: the key is in the cache at this point
-    fn after_get_or_insert<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>);
+    fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
-    fn after_remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>);
+    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>);
+
+    fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
     fn is_expired(&self, key: &Self::Node) -> bool;
 }

@@ -1,10 +1,10 @@
-use std::hash::{BuildHasher, Hash};
 
 use hashbrown::HashMap;
 
 use crate::LightCache;
-
 use super::Policy;
+
+use std::hash::{BuildHasher, Hash};
 
 /// A doubly linked list arena
 ///
@@ -138,11 +138,39 @@ where
             self.tail = parent;
         }
     }
+}
 
+/// All methods here should never be able to create an invalid state on the list
+impl<I, N> LinkedArena<I, N>
+where
+    N: LinkedNode<I>,
+    I: Copy + Hash + Eq,
+{
+    #[allow(unused)]
     /// Move the node at idx to the front of the list
     ///
     /// # Panics
     /// Panics if new_head is out of bounds
+    pub(crate) fn move_to_head_key(&mut self, key: &I) {
+        if let Some(new_head_idx) = self.idx_of.get(key).copied() {
+            self.unlink(new_head_idx);
+
+            // saftey: unlink checks that the idx is valid
+            let node = unsafe { self.nodes.get_unchecked_mut(new_head_idx) };
+            node.set_next(self.head);
+            node.set_prev(None);
+
+            if let Some(old) = self.head.replace(new_head_idx) {
+                unsafe {
+                    // unwrap: we should have a valid old head idx
+                    self.nodes.get_unchecked_mut(old).set_prev(Some(new_head_idx));
+                }
+            }
+        } else {
+            panic!("Invalid key to move to head on LinkedArena");
+        }
+    }
+
     pub(crate) fn move_to_head(&mut self, new_head: usize) {
         self.unlink(new_head);
 
@@ -158,13 +186,15 @@ where
             }
         }
     }
-}
 
-impl<I, N> LinkedArena<I, N>
-where
-    N: LinkedNode<I>,
-    I: Copy + Hash + Eq,
-{
+    pub(crate) fn get_node_mut(&mut self, key: &I) -> Option<(usize, &mut N)> {
+        if let Some(idx) = self.idx_of.get(key).copied() {
+            Some((idx, unsafe { self.nodes.get_unchecked_mut(idx) }))
+        } else {
+            None
+        }
+    }
+
     /// Remove the node from the given index, updating the start or end bounds as needed
     /// and returning the removed node.
     ///
@@ -172,18 +202,9 @@ where
     ///
     /// # Panics
     /// IF idx is out of bounds
-    pub(crate) fn remove_item<V, S, P>(
-        &mut self,
-        item: &I,
-        cache: &LightCache<I, V, S, P>,
-    ) -> Option<(usize, N)>
-    where
-        V: Clone + Sync,
-        S: BuildHasher,
-        P: Policy<I, V>,
-    {
+    pub(crate) fn remove_item(&mut self, item: &I) -> Option<(usize, N)> {
         if let Some(idx) = self.idx_of.get(item).copied() {
-            Some(self.remove(idx, cache))
+            Some(self.remove(idx))
         } else {
             None
         }
@@ -196,22 +217,12 @@ where
     ///
     /// # Panics
     /// If idx is out of bounds
-    pub(crate) fn remove<V, S, P>(
-        &mut self,
-        idx: usize,
-        cache: &LightCache<I, V, S, P>,
-    ) -> (usize, N)
-    where
-        V: Clone + Sync,
-        S: BuildHasher,
-        P: Policy<I, V>,
-    {   
+    pub(crate) fn remove(&mut self, idx: usize) -> (usize, N) {
         // panics if the idx is out of bounds
         self.unlink(idx);
 
         let removed = self.nodes.swap_remove(idx);
         self.idx_of.remove(removed.item());
-        cache.remove_no_policy(removed.item());
 
         let len = self.nodes.len();
         // if the last element was just removed than this index will be out of bounds
@@ -242,7 +253,8 @@ where
             if let Some(tail) = self.tail {
                 // saftey: we should have a valid tail index
                 if unsafe { self.nodes.get_unchecked(tail).should_evict(cache) } {
-                    self.remove(tail, cache);
+                    let (_, n) = self.remove(tail);
+                    cache.remove_no_policy(n.item());
                 } else {
                     break;
                 }

@@ -1,15 +1,16 @@
-mod get_or_insert;
+pub(crate) mod get_or_insert;
+pub(crate) use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
 
 use crate::map::LightMap;
 use crate::policy::{NoopPolicy, Policy};
-use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
 pub use hashbrown::hash_map::DefaultHashBuilder;
 
+use std::future::Future;
 use std::hash::{BuildHasher, Hash};
 use std::ops::Deref;
 use std::sync::Arc;
 
-/// A concurrent hashmap that allows for effcient async insertion of values
+/// A concurrent hashmap that allows for efficient async insertion of values
 pub struct LightCache<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
     inner: Arc<LightCacheInner<K, V, S, P>>,
 }
@@ -98,22 +99,16 @@ where
     /// If a call to remove is issued between the time of inserting, and waking up tasks, the other tasks will simply see the empty slot and try again
     pub async fn get_or_insert<F, Fut>(&self, key: K, init: F) -> V
     where
-        F: FnOnce() -> Fut + Unpin,
-        Fut: std::future::Future<Output = V>,
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>,
     {
-        self.policy.before_get_or_insert(&key, self);
-
-        let inner = self.get_or_insert_inner(key, init).await;
-
-        self.policy.after_get_or_insert(&key, self);
-
-        inner
+        self.policy.get_or_insert(key, self, init).await
     }
 
     pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, F>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<V, Err>>,
+        Fut: Future<Output = Result<V, Err>>,
     {
         todo!()
     }
@@ -122,24 +117,13 @@ where
     ///
     /// This function doesn't take into account any pending insertions from [`Self::get_or_insert`] or [`Self::get_or_try_insert`]
     /// and will not wait for them to complete, which means it could be overwritten by another task quickly.
-    pub fn insert(&self, key: K, value: V) -> Option<V> {
-        self.policy.before_get_or_insert(&key, self);
-
-        let v = self.map.insert(key, value);
-
-        self.policy.after_get_or_insert(&key, self);
-
-        v
+    pub fn insert(&self, key: K, value: V) {
+        self.policy.insert(key, value, self)
     }
 
     /// Try to get a value from the cache
     pub fn get(&self, key: &K) -> Option<V> {
-        self.policy.before_get_or_insert(key, self);
-
-        self.map.get(key).and_then(|v| {
-            self.policy.after_get_or_insert(key, self);
-            Some(v)
-        })
+        self.policy.get(key, self)
     }
 
     /// Remove a value from the cache, returning the value if it was present
@@ -147,25 +131,26 @@ where
     /// If this is called while another task is trying to [`Self::get_or_insert`] or [`Self::get_or_try_insert`],
     /// it will force them to recompute the value and insert it again.
     pub fn remove(&self, key: &K) -> Option<V> {
-        self.map.remove(key).and_then(|v| {
-            self.policy.after_remove(key, self);
-            Some(v)
-        })
+        self.policy.remove(key, self)
     }
 
+    #[inline]
+    pub(crate) fn get_no_policy(&self, key: &K) -> Option<V> {
+        self.map.get(key)
+    }
+
+    #[inline]
+    pub(crate) fn insert_no_policy(&self, key: K, value: V) {
+        self.map.insert(key, value);
+    }
+
+    #[inline]
     pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
         self.map.remove(key)
     }
-}
 
-impl<K, V, S, P> LightCache<K, V, S, P>
-where
-    K: Eq + Hash + Copy,
-    V: Clone + Sync,
-    S: BuildHasher,
-    P: Policy<K, V>,
-{
-    fn get_or_insert_inner<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, F, Fut> {
+    #[inline]
+    pub(crate) fn get_or_insert_no_policy<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, F, Fut> {
         // happy path, the value is already in the cache
         // this will slow down benchmarking but should speed up real world usage
         if let Some(value) = self.map.get(&key) {
