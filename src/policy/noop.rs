@@ -1,19 +1,22 @@
-use std::hash::BuildHasher;
+use std::{hash::BuildHasher, sync::MutexGuard};
 
 use crate::{cache::get_or_insert::GetOrInsertFuture, LightCache};
 
-use super::Policy;
+use super::{Policy, Prune};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NoopPolicy;
-pub struct NoopExpiry;
 
 impl<K, V> Policy<K, V> for NoopPolicy
 where
     K: Eq + std::hash::Hash + Copy,
     V: Clone + Sync,
 {
-    type Node = K;
+    type Inner = ();
+
+    fn lock_inner(&self) -> MutexGuard<()> {
+        unreachable!("You should not be calling inner on noop policy")
+    }
 
     #[inline]
     fn get_or_insert<'a, S, F, Fut>(
@@ -44,9 +47,8 @@ where
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         cache.remove_no_policy(key)
     }
-    
-    #[inline]
-    fn is_expired(&self, _key: &K) -> bool {
-        false
-    }
+}
+
+impl<K, V> Prune<K, V, NoopPolicy> for () {
+    fn prune<S: BuildHasher>(&mut self, _: &LightCache<K, V, S, NoopPolicy>) {}
 }

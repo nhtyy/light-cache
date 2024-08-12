@@ -31,7 +31,7 @@ where
 /// This is a replacment for directly using [`LightCache`] 
 /// with a [`TtlPolicy`] and calling [`LightCache::get_or_try_insert`] everywhere
 pub struct RefreshCache<K, V, R> {
-    pub cache: LightCache<K, V, DefaultHashBuilder, TtlPolicy<K>>,
+    pub cache: LightCache<K, V, DefaultHashBuilder, TtlPolicy<K, V>>,
     refresh: R,
 }
 

@@ -1,94 +1,91 @@
 use std::{
-    fmt::Debug,
-    hash::{BuildHasher, Hash},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    fmt::Debug, hash::{BuildHasher, Hash}, marker::PhantomData, sync::{Arc, Mutex, MutexGuard}, time::{Duration, Instant}
 };
 
 use super::{
     linked_arena::{LinkedArena, LinkedNode},
-    Policy,
+    Policy, Prune,
 };
 use crate::{cache::GetOrInsertFuture, LightCache};
 
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
-///
-/// If a value is accessed it will be moved to the front of the cache and thus not be removed until after the ttl
-/// If the values may become stale before the ttl is exceeded, consider using a refresh policy
-pub struct TtlPolicy<K> {
-    ttl: Duration,
+pub struct TtlPolicy<K, V> {
     inner: Arc<Mutex<TtlPolicyInner<K>>>,
+    /// borrow chcker complains and requires fully qualified syntax without this which is annoying
+    phantom: PhantomData<V>
 }
 
-impl<K> Clone for TtlPolicy<K> {
+impl<K, V> Clone for TtlPolicy<K, V> {
     fn clone(&self) -> Self {
         TtlPolicy {
-            ttl: self.ttl,
             inner: self.inner.clone(),
+            phantom: self.phantom
         }
     }
 }
 
 pub struct TtlPolicyInner<K> {
+    ttl: Duration,
     arena: LinkedArena<K, TtlNode<K>>,
 }
 
-impl<K> TtlPolicy<K> {
+impl<K, V> TtlPolicy<K, V> {
     pub fn new(ttl: Duration) -> Self {
         TtlPolicy {
-            ttl,
             inner: Arc::new(Mutex::new(TtlPolicyInner {
+                ttl,
                 arena: LinkedArena::new(),
             })),
+            phantom: PhantomData
         }
     }
 }
 
-impl<K, V> Policy<K, V> for TtlPolicy<K>
+impl<K, V> Policy<K, V> for TtlPolicy<K, V>
 where
     K: Copy + Eq + Hash,
     V: Clone + Sync,
 {
-    type Node = TtlNode<K>;
+    type Inner = TtlPolicyInner<K>;
+
+    #[inline]
+    fn lock_inner(&self) -> MutexGuard<'_, Self::Inner> {
+        self.inner.lock().unwrap()
+    }
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
-        let mut policy = self.inner.lock().unwrap();
-
-        policy.arena.clear_expired(cache);
-        if let Some((idx, node)) = policy.arena.get_node_mut(key) {
-            node.last_touched = Instant::now();
-
-            policy.arena.move_to_head(idx);
-        }
+        self.prune(cache);
 
         cache.get_no_policy(key)
     }
 
     fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) {
-        let mut policy = self.inner.lock().unwrap();
+        {
+            let mut inner = self.lock_inner();
+            inner.prune(cache);
 
-        policy.arena.clear_expired(cache);
-        if let Some((idx, node)) = policy.arena.get_node_mut(&key) {
-            node.last_touched = Instant::now();
+            // were updating the value, so lets reset the creation time
+            if let Some((idx, node)) = inner.arena.get_node_mut(&key) {
+                node.creation = Instant::now();
 
-            policy.arena.move_to_head(idx);
-        } else {
-            policy.arena.insert_head(key);
+                inner.arena.move_to_head(idx);
+            } else {
+                inner.arena.insert_head(key);
+            }
         }
 
         cache.insert_no_policy(key, value);
     }
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
-        let mut policy = self.inner.lock().unwrap();
+        {
+            let mut inner = self.lock_inner();
 
-        // theres a chance were removing when this key is expired so lets just take it now for safekeeping
-        let v = cache.remove_no_policy(key);
+            inner.prune(cache);
+            inner.arena.remove_item(key);
+        }
 
-        policy.arena.clear_expired(cache);
-        policy.arena.remove_item(key);
-
-        v
+        cache.remove_no_policy(key)
     }
 
     fn get_or_insert<'a, S, F, Fut>(
@@ -102,28 +99,39 @@ where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = V>,
     {
-        let mut policy = self.inner.lock().unwrap();
+        {
+            let mut inner = self.lock_inner();
 
-        policy.arena.clear_expired(cache);
-        if let Some((idx, node)) = policy.arena.get_node_mut(&key) {
-            node.last_touched = Instant::now();
-
-            policy.arena.move_to_head(idx);
-        } else {
-            policy.arena.insert_head(key);
+            inner.prune(cache);
+            // get or insert doesnt always update the value so we only move it to the head if its new
+            if let None = inner.arena.get_node_mut(&key) {
+                inner.arena.insert_head(key);
+            }
         }
 
         cache.get_or_insert_no_policy(key, init)
     }
+}
 
-    fn is_expired(&self, node: &TtlNode<K>) -> bool {
-        self.ttl < node.duration_since_last_touched()
+impl<K, V> Prune<K, V, TtlPolicy<K, V>> for TtlPolicyInner<K> 
+    where
+        K: Copy + Eq + Hash,
+        V: Clone + Sync
+{
+    fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, TtlPolicy<K, V>>) {
+        while let Some(tail) = self.arena.tail {
+            // saftey: we should have a valid tail index
+            if unsafe { self.arena.nodes.get_unchecked(tail).should_evict(self.ttl) } {
+                let (_, n) = self.arena.remove(tail);
+                cache.remove_no_policy(n.item());
+            }
+        }
     }
 }
 
 pub struct TtlNode<K> {
     key: K,
-    last_touched: Instant,
+    creation: Instant,
     parent: Option<usize>,
     child: Option<usize>,
 }
@@ -135,7 +143,7 @@ where
     fn new(key: K, parent: Option<usize>, child: Option<usize>) -> Self {
         TtlNode {
             key,
-            last_touched: Instant::now(),
+            creation: Instant::now(),
             parent,
             child,
         }
@@ -165,7 +173,7 @@ where
 impl<K> Debug for TtlNode<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TtlNode")
-            .field("last_touched", &self.last_touched)
+            .field("creation", &self.creation)
             .field("parent", &self.parent)
             .field("child", &self.child)
             .finish()
@@ -173,10 +181,15 @@ impl<K> Debug for TtlNode<K> {
 }
 
 impl<K> TtlNode<K> {
-    fn duration_since_last_touched(&self) -> Duration {
-        Instant::now().duration_since(self.last_touched)
+    fn duration_since_creation(&self) -> Duration {
+        Instant::now().duration_since(self.creation)
+    }
+
+    fn should_evict(&self, ttl: Duration) -> bool {
+        self.duration_since_creation() > ttl
     }
 }
+
 
 #[cfg(test)]
 mod test {
@@ -193,7 +206,7 @@ mod test {
         std::thread::sleep(duration_seconds(seconds));
     }
 
-    fn insert_n<S>(cache: &LightCache<i32, i32, S, TtlPolicy<i32>>, n: usize)
+    fn insert_n<S>(cache: &LightCache<i32, i32, S, TtlPolicy<i32, i32>>, n: usize)
     where
         S: BuildHasher,
     {
@@ -202,7 +215,7 @@ mod test {
         }
     }
 
-    fn cache<K, V>(ttl: Duration) -> LightCache<K, V, DefaultHashBuilder, TtlPolicy<K>>
+    fn cache<K, V>(ttl: Duration) -> LightCache<K, V, DefaultHashBuilder, TtlPolicy<K, V>>
     where
         K: Copy + Eq + Hash,
         V: Clone + Sync,
@@ -232,28 +245,7 @@ mod test {
     }
 
     #[test]
-    /// Insert 5 keys and then get 2 of them in the front of them halfway through, insert 2 more keys
-    /// wait for the full length and insert another key this should remove some keys in the middle of the buffer
     fn test_basic_scenario_2() {
-        let cache = cache::<i32, i32>(duration_seconds(2));
-
-        insert_n(&cache, 5);
-
-        sleep_seconds(1);
-
-        cache.get(&2);
-        cache.get(&3);
-
-        sleep_seconds(1);
-
-        insert_n(&cache, 2);
-
-        let policy = cache.policy.inner.lock().unwrap();
-        assert_eq!(policy.arena.nodes.len(), 4);
-    }
-
-    #[test]
-    fn test_basic_scenario_3() {
         let cache = cache::<i32, i32>(duration_seconds(1));
 
         insert_n(&cache, 10);

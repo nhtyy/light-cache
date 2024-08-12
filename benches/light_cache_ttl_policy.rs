@@ -10,7 +10,7 @@ use std::time::Duration;
 use light_cache::constants_for_benchmarking::{INSERT_MANY, GET_MANY};
 use light_cache::LightCache;
 
-static CACHE: OnceLock<Mutex<LightCache<usize, usize, DefaultHashBuilder, TtlPolicy<usize>>>> = OnceLock::new();
+static CACHE: OnceLock<Mutex<LightCache<usize, usize, DefaultHashBuilder, TtlPolicy<usize, usize>>>> = OnceLock::new();
 
 // Here we have an async function to benchmark
 async fn insert_many() {
@@ -62,7 +62,7 @@ fn clear_cache(amount: usize) {
     let _ = std::mem::replace(&mut *cache_ref, new_ttl_policy_cache(amount));
 }
 
-fn new_ttl_policy_cache(capacity: usize) -> LightCache<usize, usize, DefaultHashBuilder, TtlPolicy<usize>> {
+fn new_ttl_policy_cache(capacity: usize) -> LightCache<usize, usize, DefaultHashBuilder, TtlPolicy<usize, usize>> {
     LightCache::from_parts_with_capacity(TtlPolicy::new(Duration::from_secs(5)), DefaultHashBuilder::default(), capacity)
 }
 

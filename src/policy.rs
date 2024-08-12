@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::hash::{BuildHasher, Hash};
+use std::sync::MutexGuard;
 
 use crate::cache::get_or_insert::GetOrInsertFuture;
 use crate::LightCache;
@@ -12,10 +13,14 @@ mod linked_arena;
 pub use noop::NoopPolicy;
 pub use ttl::TtlPolicy;
 
-/// A [Policy] tells the [LightCache] what items are allowed to remain in it.
+/// A [Policy] augments a [LightCache] instance, managing the entry and eviction of items in the cache
+/// 
+/// A policy usally requires shared mutable state, therefore the [`Policy::Inner`] type is used to represent this.
 pub trait Policy<K, V>: Clone {
-    /// The interal type used by this policy to track keys
-    type Node;
+    /// The inner type of this policy, likely behind a lock
+    type Inner: Prune<K, V, Self>;
+
+    fn lock_inner(&self) -> MutexGuard<'_, Self::Inner>;
 
     fn get_or_insert<'a, S, F, Fut>(
         &self,
@@ -35,5 +40,16 @@ pub trait Policy<K, V>: Clone {
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
-    fn is_expired(&self, key: &Self::Node) -> bool;
+    /// # Warning: Calling this while holding a lock from [`Policy::lock_inner`] will deadlock
+    fn prune<S: BuildHasher>(&self, cache: &LightCache<K, V, S, Self>) {
+        self.lock_inner().prune(cache)
+    }
+}
+
+/// [Prune] controls how entries are expired (not nescessarily evicted) from the cache
+pub trait Prune<K, V, P> {
+    /// Prune is typically be called before any operation on the cahce, or the policy
+    /// 
+    /// For instance: An LRU w/ expiration would prune expired entries before checking if its full
+    fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, P>);
 }
