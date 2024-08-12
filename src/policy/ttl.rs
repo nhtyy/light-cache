@@ -153,6 +153,8 @@ where
             if unsafe { self.arena.nodes.get_unchecked(tail).should_evict(self.ttl) } {
                 let (_, n) = self.arena.remove(tail);
                 cache.remove_no_policy(n.item());
+            } else {
+                break;
             }
         }
     }
