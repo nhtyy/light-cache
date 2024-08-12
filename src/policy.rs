@@ -1,9 +1,6 @@
-use std::future::Future;
-use std::hash::{BuildHasher, Hash};
+use std::hash::BuildHasher;
 use std::sync::MutexGuard;
 
-use crate::cache::get_or_insert::GetOrInsertFuture;
-use crate::cache::GetOrTryInsertFuture;
 use crate::LightCache;
 
 pub mod noop;
@@ -22,30 +19,6 @@ pub trait Policy<K, V>: Clone {
     type Inner: Prune<K, V, Self>;
 
     fn lock_inner(&self) -> MutexGuard<'_, Self::Inner>;
-
-    fn get_or_insert<'a, S, F, Fut>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> GetOrInsertFuture<'a, K, V, S, F, Fut>
-    where
-        K: Eq + Hash + Copy,
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = V>;
-
-    fn get_or_try_insert<'a, S, F, Fut, E>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> GetOrTryInsertFuture<'a, K, V, S, F, Fut>
-    where
-        K: Eq + Hash + Copy,
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, E>>;
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 

@@ -10,7 +10,7 @@ use super::{
     linked_arena::{LinkedArena, LinkedNode},
     Policy, Prune,
 };
-use crate::{cache::{GetOrInsertFuture, GetOrTryInsertFuture}, LightCache};
+use crate::LightCache;
 
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
 pub struct TtlPolicy<K, V> {
@@ -90,55 +90,6 @@ where
         }
 
         cache.remove_no_policy(key)
-    }
-
-    fn get_or_insert<'a, S, F, Fut>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> GetOrInsertFuture<'a, K, V, S, F, Fut>
-    where
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = V>,
-    {
-        {
-            let mut inner = self.lock_inner();
-
-            inner.prune(cache);
-            // get or insert doesnt always update the value so we only move it to the head if its new
-            if let None = inner.arena.get_node_mut(&key) {
-                inner.arena.insert_head(key);
-            }
-        }
-
-        cache.get_or_insert_no_policy(key, init)
-    }
-
-    fn get_or_try_insert<'a, S, F, Fut, E>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> GetOrTryInsertFuture<'a, K, V, S, F, Fut>
-    where
-        K: Eq + Hash + Copy,
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<V, E>>,
-    {
-        {
-            let mut inner = self.lock_inner();
-
-            inner.prune(cache);
-            // get or insert doesnt always update the value so we only move it to the head if its new
-            if let None = inner.arena.get_node_mut(&key) {
-                inner.arena.insert_head(key);
-            }
-        }
-
-        cache.get_or_try_insert_no_policy::<F, Fut, E>(key, init)
     }
 }
 

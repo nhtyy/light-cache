@@ -1,6 +1,9 @@
 pub(crate) mod get_or_insert;
 pub(crate) use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
 
+pub(crate) mod get_or_insert_race;
+pub(crate) use get_or_insert_race::{GetOrInsertRace, GetOrTryInsertRace};
+
 use crate::map::LightMap;
 use crate::policy::{NoopPolicy, Policy};
 pub use hashbrown::hash_map::DefaultHashBuilder;
@@ -97,20 +100,108 @@ where
     ///
     /// ### Note
     /// If a call to remove is issued between the time of inserting, and waking up tasks, the other tasks will simply see the empty slot and try again
-    pub async fn get_or_insert<F, Fut>(&self, key: K, init: F) -> V
+    pub fn get_or_insert<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, P, F, Fut>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = V>,
     {
-        self.policy.get_or_insert(key, self, init).await
+        if let Some(value) = self.get(&key) {
+            return GetOrInsertFuture::Ready(Some(value));
+        }
+
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrInsertFuture::Waiting {
+            cache: self,
+            shard,
+            key,
+            init: Some(init),
+            hash,
+            joined: false,
+        }
     }
 
-    pub async fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> Result<V, Err>
+    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, S, P, F, Fut>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, Err>>,
     {
-        self.policy.get_or_try_insert(key, self, init).await
+        if let Some(value) = self.get(&key) {
+            return GetOrTryInsertFuture::Ready(Some(value));
+        }
+
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrTryInsertFuture::Waiting {
+            cache: self,
+            shard,
+            key,
+            init: Some(init),
+            hash,
+            joined: false,
+        }
+    }
+
+    #[inline]
+    pub async fn get_or_insert_race<F, Fut>(
+        &self,
+        key: K,
+        init: F,
+    ) -> V
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>,
+    {
+        if let Some(val) = self.get(&key) {
+            return val;
+        }
+
+        self.get_or_insert_race_inner(key, init).await
+    }
+
+    pub async fn get_or_try_insert_race<F, Fut, E>(
+        &self,
+        key: K,
+        init: F,
+    ) -> Result<V, E>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<V, E>>,
+    {
+        if let Some(val) = self.get(&key) {
+            return Ok(val);
+        }
+
+        self.get_or_try_insert_race_inner(key, init).await
+    }
+
+    #[inline]
+    fn get_or_insert_race_inner<F, Fut>(
+        &self,
+        key: K,
+        init: F,
+    ) -> GetOrInsertRace<K, V, S, P, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrInsertRace::new(self, shard, hash, key, init())
+    }
+
+    fn get_or_try_insert_race_inner<F, Fut, E>(
+        &self,
+        key: K,
+        init: F,
+    ) -> GetOrTryInsertRace<K, V, S, P, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<V, E>>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrTryInsertRace::new(self, shard, hash, key, init())
     }
 
     /// Insert a value directly into the cache
@@ -147,52 +238,5 @@ where
     #[inline]
     pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
         self.map.remove(key)
-    }
-
-    #[inline]
-    pub(crate) fn get_or_insert_no_policy<F, Fut>(
-        &self,
-        key: K,
-        init: F,
-    ) -> GetOrInsertFuture<K, V, S, F, Fut> {
-        // happy path, the value is already in the cache
-        // this will slow down benchmarking but should speed up real world usage
-        if let Some(value) = self.map.get(&key) {
-            return GetOrInsertFuture::Ready(Some(value));
-        }
-
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrInsertFuture::Waiting {
-            shard,
-            key,
-            init: Some(init),
-            hash,
-            build_hasher: &self.map.build_hasher,
-            curr_try: None,
-        }
-    }
-
-    pub(crate) fn get_or_try_insert_no_policy<F, Fut, E>(
-        &self,
-        key: K,
-        init: F,
-    ) -> GetOrTryInsertFuture<K, V, S, F, Fut> {
-        // happy path, the value is already in the cache
-        // this will slow down benchmarking but should speed up real world usage
-        if let Some(value) = self.map.get(&key) {
-            return GetOrTryInsertFuture::Ready(Some(value));
-        }
-
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrTryInsertFuture::Waiting {
-            shard,
-            key,
-            init: Some(init),
-            hash,
-            build_hasher: &self.map.build_hasher,
-            curr_try: None,
-        }
     }
 }

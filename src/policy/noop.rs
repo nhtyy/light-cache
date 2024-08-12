@@ -1,7 +1,6 @@
 use std::{hash::BuildHasher, sync::MutexGuard};
 
-use crate::{cache::get_or_insert::GetOrInsertFuture, LightCache};
-
+use crate::LightCache;
 use super::{Policy, Prune};
 
 #[derive(Clone, Copy, Debug)]
@@ -16,36 +15,6 @@ where
 
     fn lock_inner(&self) -> MutexGuard<()> {
         unreachable!("You should not be calling inner on noop policy")
-    }
-
-    #[inline]
-    fn get_or_insert<'a, S, F, Fut>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> GetOrInsertFuture<'a, K, V, S, F, Fut>
-    where
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = V>,
-    {
-        cache.get_or_insert_no_policy(key, init)
-    }
-
-    fn get_or_try_insert<'a, S, F, Fut, E>(
-        &self,
-        key: K,
-        cache: &'a LightCache<K, V, S, Self>,
-        init: F,
-    ) -> crate::cache::GetOrTryInsertFuture<'a, K, V, S, F, Fut>
-    where
-        K: Eq + std::hash::Hash + Copy,
-        S: BuildHasher,
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<V, E>>,
-    {
-        cache.get_or_try_insert_no_policy::<_, _, E>(key, init)
     }
 
     #[inline]

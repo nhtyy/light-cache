@@ -1,31 +1,43 @@
 use std::task::Waker;
 
 pub(crate) struct Wakers {
-    // How many failures have been made to insert the value
-    curr_try: usize,
+    // in the event of a [`LightCache::get_or_insert_race`], this is the number of concurrent workers
+    pub(crate) workers: usize,
     // wakers to notify when the value is inserted
     pub(crate) wakers: Vec<Waker>,
 }
 
 impl Wakers {
-    pub(crate) fn start(curr_try: usize) -> Self {
+    pub(crate) fn start(waker: Waker) -> Self {
         Wakers {
-            curr_try,
-            wakers: Vec::new(),
+            workers: 1,
+            wakers: vec![waker]
         }
     }
 
-    pub(crate) fn join(&mut self, waker: Waker) {
+    pub(crate) fn join_waiter(&mut self, waker: Waker) {
         self.wakers.push(waker);
     }
 
-    // how many tries have been made to insert the value
-    pub(crate) fn attempts(&mut self) -> &usize {
-        &self.curr_try
+    pub(crate) fn join_worker(&mut self) {
+        self.workers += 1;
+    }
+
+    /// Returns the number of workers that have not yet completed
+    pub(crate) fn remove_worker(&mut self) -> usize {
+        self.workers = self.workers.checked_sub(1).unwrap_or(0);
+
+        self.workers
+    }
+
+    pub(crate) fn alert_all(&self) {
+        for waker in &self.wakers {
+            waker.wake_by_ref();
+        }
     }
 
     #[inline]
-    pub(crate) fn alert_all(self) {
+    pub(crate) fn finsih(self) {
         for waker in self.wakers {
             waker.wake();
         }

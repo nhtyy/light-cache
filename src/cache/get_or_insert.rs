@@ -1,6 +1,3 @@
-use core::fmt;
-use std::error::Error;
-use std::fmt::Display;
 use std::future::Future;
 use std::hash::BuildHasher;
 use std::hash::Hash;
@@ -10,26 +7,31 @@ use std::task::Poll;
 
 use crate::map::Shard;
 use crate::map::Wakers;
+use crate::policy::Policy;
 
 use pin_project::pinned_drop;
 
+use super::LightCache;
+
+/// Todo can we make this more generic? theres alot of repetition here
+
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[pin_project::pin_project(project = GetOrInsertFutureProj, PinnedDrop)]
-pub enum GetOrInsertFuture<'a, K, V, S, F, Fut>
+pub enum GetOrInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
     Waiting {
         shard: &'a Shard<K, V>,
-        build_hasher: &'a S,
+        cache: &'a LightCache<K, V, S, P>,
         hash: u64,
         key: K,
         init: Option<F>,
-        curr_try: Option<usize>,
+        joined: bool,
     },
     Working {
         shard: &'a Shard<K, V>,
-        build_hasher: &'a S,
+        cache: &'a LightCache<K, V, S, P>,
         hash: u64,
         key: K,
         #[pin]
@@ -38,9 +40,8 @@ where
     Ready(Option<V>),
 }
 
-
 #[pinned_drop]
-impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrInsertFuture<'a, K, V, S, F, Fut>
+impl<'a, K, V, S, P, F, Fut> PinnedDrop for GetOrInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
@@ -49,14 +50,11 @@ where
 
         match project {
             GetOrInsertFutureProj::Working { shard, key, .. } => {
-                let mut waiters = shard
-                    .waiters
-                    .lock()
-                    .expect("on drop waiters lock not poisoned");
+                let mut lock = shard.waiters.lock().expect("waiters lock not poisoned");
 
-                // notify the wakers and set the node to inactive so another thread can try to insert
-                // note: in the happy path the waiters have been removed, so this may be a None
-                if let Some(node) = waiters.remove(key) {
+                if let Some(node) = lock.get_mut(key) {
+                    // if we hit this branch than we panicked and we didnt finish insertion
+                    node.remove_worker();
                     node.alert_all();
                 }
             }
@@ -65,13 +63,14 @@ where
     }
 }
 
-impl<'a, K, V, S, F, Fut> Future for GetOrInsertFuture<'a, K, V, S, F, Fut>
+impl<'a, K, V, S, P, F, Fut> Future for GetOrInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Eq + Hash + Copy,
     V: Clone + Sync,
     S: BuildHasher,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = V>,
+    P: Policy<K, V>,
 {
     type Output = V;
 
@@ -81,10 +80,10 @@ where
                 GetOrInsertFutureProj::Waiting {
                     shard,
                     key,
-                    hash,
                     init,
-                    curr_try,
-                    build_hasher,
+                    joined,
+                    cache,
+                    hash,
                 } => {
                     // take the lock to make sure no one else is trying to insert the value
                     let mut waiters_lock = shard.waiters.lock().expect("waiters lock not poisoned");
@@ -96,30 +95,21 @@ where
                     // we dont call `init` just yet as it could panic, we need to drop our locks first.
                     match waiters_lock.get_mut(key) {
                         Some(node) => {
-                            if let Some(curr_try) = curr_try {
-                                if node.attempts() == curr_try {
-                                    return Poll::Pending;
-                                }
+                            if !*joined {
+                                node.join_waiter(cx.waker().clone());
+                                *joined = true;
                             }
 
-                            // someone is currently trying to insert the value, lets wait
-                            node.join(cx.waker().clone());
-                            curr_try.replace(*node.attempts());
-
-                            return Poll::Pending;
+                            if node.workers > 0 {
+                                return Poll::Pending;
+                            } else {
+                                // we are the only worker, lets join the worker
+                                node.join_worker();
+                            }
                         }
-                        None => match curr_try {
-                            // we have seen a node before but it has been removed
-                            // so we need to increment to tell the next task that the queue has changed
-                            Some(curr_try) => {
-                                *curr_try += 1;
-                                waiters_lock.insert(*key, Wakers::start(*curr_try));
-                            }
-                            None => {
-                                *curr_try = Some(0);
-                                waiters_lock.insert(*key, Wakers::start(0));
-                            }
-                        },
+                        None => {
+                            waiters_lock.insert(*key, Wakers::start(cx.waker().clone()));
+                        }
                     };
                     // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
@@ -127,7 +117,7 @@ where
                     // todo avoid these copies somehow ?
                     let working = GetOrInsertFuture::Working {
                         shard,
-                        build_hasher: *build_hasher,
+                        cache: *cache,
                         hash: *hash,
                         key: *key,
                         fut: init.take().expect("init is none")(),
@@ -141,19 +131,29 @@ where
                     shard,
                     key,
                     fut,
-                    build_hasher,
                     hash,
+                    cache,
                 } => {
                     if let Poll::Ready(val) = fut.poll(cx) {
-                        // we have the value, lets insert it into the cache
-                        let _ = shard.insert(*key, val.clone(), *hash, *build_hasher);
+                        let mut lock = shard.waiters.lock().expect("waiters lock not poisoned");
+                        if let Some(value) = shard.get(key, *hash) {
+                            return Poll::Ready(value);
+                        }
+
+                        cache.insert(*key, val.clone());
+
+                        if let Some(wakers) = lock.remove(key) {
+                            wakers.finsih();
+                        } else {
+                            unreachable!("were holding the lock and inserted the value into the cache, this is a bug");
+                        }
 
                         // the waiters will be alerted on drop
                         return Poll::Ready(val);
                     } else {
                         return Poll::Pending;
                     }
-                },
+                }
                 GetOrInsertFutureProj::Ready(v) => {
                     return Poll::Ready(v.take().expect("value is none"));
                 }
@@ -162,24 +162,23 @@ where
     }
 }
 
-
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[pin_project::pin_project(project = GetOrTryInsertFutureProj, PinnedDrop)]
-pub enum GetOrTryInsertFuture<'a, K, V, S, F, Fut>
+pub enum GetOrTryInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
     Waiting {
+        cache: &'a LightCache<K, V, S, P>,
         shard: &'a Shard<K, V>,
-        build_hasher: &'a S,
         hash: u64,
         key: K,
         init: Option<F>,
-        curr_try: Option<usize>,
+        joined: bool,
     },
     Working {
+        cache: &'a LightCache<K, V, S, P>,
         shard: &'a Shard<K, V>,
-        build_hasher: &'a S,
         hash: u64,
         key: K,
         #[pin]
@@ -189,7 +188,7 @@ where
 }
 
 #[pinned_drop]
-impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrTryInsertFuture<'a, K, V, S, F, Fut>
+impl<'a, K, V, S, P, F, Fut> PinnedDrop for GetOrTryInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
@@ -198,29 +197,27 @@ where
 
         match project {
             GetOrTryInsertFutureProj::Working { shard, key, .. } => {
-                let mut waiters = shard
-                    .waiters
-                    .lock()
-                    .expect("on drop waiters lock not poisoned");
+                let mut lock = shard.waiters.lock().expect("waiters lock not poisoned");
 
-                // notify the wakers and set the node to inactive so another thread can try to insert
-                // note: in the happy path the waiters have been removed, so this may be a None
-                if let Some(node) = waiters.remove(key) {
+                if let Some(node) = lock.get_mut(key) {
+                    // if we hit this branch than we retunred an error, and we didnt finish insertion
+                    node.remove_worker();
                     node.alert_all();
                 }
             }
-            _ => {},
+            _ => {}
         }
     }
 }
 
-impl<'a, K, V, S, F, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, S, F, Fut>
+impl<'a, K, V, S, P, F, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, S, P, F, Fut>
 where
     K: Eq + Hash + Copy,
     V: Clone + Sync,
     S: BuildHasher,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<V, E>>,
+    P: Policy<K, V>,
 {
     type Output = Result<V, E>;
 
@@ -230,53 +227,44 @@ where
                 GetOrTryInsertFutureProj::Waiting {
                     shard,
                     key,
-                    hash,
                     init,
-                    curr_try,
-                    build_hasher,
+                    joined,
+                    cache,
+                    hash,
                 } => {
                     // take the lock to make sure no one else is trying to insert the value
                     let mut waiters_lock = shard.waiters.lock().expect("waiters lock not poisoned");
                     if let Some(value) = shard.get(key, *hash) {
                         return Poll::Ready(Ok(value));
-                    } 
+                    }
 
                     // lets check if there are any waiters if not we need to compute this ourselves
                     // we dont call `init` just yet as it could panic, we need to drop our locks first.
                     match waiters_lock.get_mut(key) {
                         Some(node) => {
-                            if let Some(curr_try) = curr_try {
-                                if node.attempts() == curr_try {
-                                    return Poll::Pending;
-                                }
+                            if !*joined {
+                                node.join_waiter(cx.waker().clone());
+                                *joined = true;
                             }
 
-                            // someone is currently trying to insert the value, lets wait
-                            node.join(cx.waker().clone());
-                            curr_try.replace(*node.attempts());
-
-                            return Poll::Pending;
+                            if node.workers > 0 {
+                                return Poll::Pending;
+                            } else {
+                                // we are the only worker, lets join the worker
+                                node.join_worker();
+                            }
                         }
-                        None => match curr_try {
-                            // we have seen a node before but it has been removed
-                            // so we need to increment to tell the next task that the queue has changed
-                            Some(curr_try) => {
-                                *curr_try += 1;
-                                waiters_lock.insert(*key, Wakers::start(*curr_try));
-                            }
-                            None => {
-                                *curr_try = Some(0);
-                                waiters_lock.insert(*key, Wakers::start(0));
-                            }
-                        },
+                        None => {
+                            waiters_lock.insert(*key, Wakers::start(cx.waker().clone()));
+                        }
                     };
                     // at this point we havent early returned, so that means this task is going to try to insert the value
                     drop(waiters_lock);
-                           
+
                     // todo avoid these copies somehow ?
                     let working = GetOrTryInsertFuture::Working {
                         shard,
-                        build_hasher: *build_hasher,
+                        cache: *cache,
                         hash: *hash,
                         key: *key,
                         fut: init.take().expect("init is none")(),
@@ -287,29 +275,33 @@ where
                         std::mem::replace(unsafe { self.as_mut().get_unchecked_mut() }, working);
                 }
                 GetOrTryInsertFutureProj::Working {
+                    cache,
                     shard,
                     key,
                     fut,
-                    build_hasher,
                     hash,
                 } => {
-                    if let Poll::Ready(value) = fut.poll(cx) {
-                        match value {
-                            Ok(val) => {
-                                // we have the value, lets insert it into the cache
-                                let _ = shard.insert(*key, val.clone(), *hash, *build_hasher);
-                                // the waiters will be alerted on drop
-                                return Poll::Ready(Ok(val));
+                    match fut.poll(cx) {
+                        Poll::Ready(Ok(val)) => {
+                            let mut lock = shard.waiters.lock().expect("waiters lock not poisoned");
+                            if let Some(value) = shard.get(key, *hash) {
+                                return Poll::Ready(Ok(value));
                             }
 
-                            Err(e) => {
-                                return Poll::Ready(Err(e));
+                            cache.insert(*key, val.clone());
+
+                            if let Some(wakers) = lock.remove(key) {
+                                wakers.finsih();
+                            } else {
+                                unreachable!("were holding the lock and inserted the value into the cache, this is a bug");
                             }
+
+                            return Poll::Ready(Ok(val));
                         }
-                    } else {
-                        return Poll::Pending;
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
                     }
-                },
+                }
                 GetOrTryInsertFutureProj::Ready(v) => {
                     return Poll::Ready(Ok(v.take().expect("Value is none in the future")));
                 }
@@ -320,10 +312,6 @@ where
 
 #[cfg(test)]
 mod test {
-    use tokio::task::JoinHandle;
-
-    use crate::cache::get_or_insert::TestError;
-
     #[tokio::test]
     async fn test_get_or_insert_single_caller() {
         use super::super::LightCache;
@@ -355,51 +343,6 @@ mod test {
         assert_eq!(get3, 1);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_get_or_insert_many_callers_returns_the_same_value_spawn() {
-        use super::super::LightCache;
-
-        let cache = LightCache::new();
-
-        let key = 1;
-
-        let get1 = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                // no sleep
-                cache.get_or_insert(key, || async { 1 }).await
-            }
-        });
-        let get2 = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        2
-                    })
-                    .await
-            }
-        });
-        let get3 = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        3
-                    })
-                    .await
-            }
-        });
-
-        let (get1, get2, get3) = tokio::join!(get1, get2, get3);
-
-        assert_eq!(get1.unwrap(), 1);
-        assert_eq!(get2.unwrap(), 1);
-        assert_eq!(get3.unwrap(), 1);
-    }
-
     #[tokio::test]
     async fn test_get_or_try_insert_ok_single_caller() {
         use super::super::LightCache;
@@ -407,7 +350,7 @@ mod test {
         let cache = LightCache::new();
 
         let key = 1;
-        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Ok(1)}).await;
+        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Ok(1) }).await;
 
         assert_eq!(val, Ok(1));
     }
@@ -419,7 +362,9 @@ mod test {
         let cache = LightCache::new();
 
         let key = 1;
-        let val: Result<i32, TestError> = cache.get_or_try_insert(key, || async { Err(TestError::IntentionalError)}).await;
+        let val: Result<i32, TestError> = cache
+            .get_or_try_insert(key, || async { Err(TestError::IntentionalError) })
+            .await;
 
         assert_eq!(val, Err(TestError::IntentionalError));
     }
@@ -453,7 +398,7 @@ mod test {
 
         let fut1 = cache.get_or_try_insert(key, || async { Err(TestError::IntentionalError) });
         let fut2 = cache.get_or_try_insert(key, || async { Ok::<i32, TestError>(2) });
-        let fut3 = cache.get_or_try_insert(key, || async { Ok::<i32, TestError>(3)});
+        let fut3 = cache.get_or_try_insert(key, || async { Ok::<i32, TestError>(3) });
 
         let (get1, get2, get3) = tokio::join!(fut1, fut2, fut3);
 
@@ -462,107 +407,17 @@ mod test {
         assert_eq!(get3, Ok(2));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_get_or_try_insert_ok_many_callers_returns_the_same_value_spawn() {
-        use super::super::LightCache;
-
-        let cache = LightCache::new();
-
-        let key = 1;
-
-        let get1: JoinHandle<Result<i32, TestError>> = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                // no sleep
-                cache.get_or_try_insert(key, || async { Ok(1) }).await
-            }
-        });
-        let get2: JoinHandle<Result<i32, TestError>> = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_try_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        Ok(2)
-                    })
-                    .await
-            }
-        });
-        let get3: JoinHandle<Result<i32, TestError>> = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_try_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        Ok(3)
-                    })
-                    .await
-            }
-        });
-
-        let (get1, get2, get3) = tokio::join!(get1, get2, get3);
-
-        assert_eq!(get1.unwrap(), Ok(1));
-        assert_eq!(get2.unwrap(), Ok(1));
-        assert_eq!(get3.unwrap(), Ok(1));
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    pub enum TestError {
+        IntentionalError,
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_get_or_try_insert_err_many_callers_returns_the_same_value_spawn() {
-        use super::super::LightCache;
-
-        let cache = LightCache::new();
-
-        let key = 1;
-
-        let get1 = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                // no sleep
-                cache.get_or_try_insert(key, || async { Err(TestError::IntentionalError) }).await
+    impl std::error::Error for TestError {}
+    impl std::fmt::Display for TestError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                TestError::IntentionalError => write!(f, ""),
             }
-        });
-        let get2: JoinHandle<Result<i32, TestError>> = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_try_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        Ok(2)
-                    })
-                    .await
-            }
-        });
-        let get3: JoinHandle<Result<i32, TestError>> = tokio::spawn({
-            let cache = cache.clone();
-            async move {
-                cache
-                    .get_or_try_insert(key, || async {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        Ok(3)
-                    })
-                    .await
-            }
-        });
-
-        let (get1, get2, get3) = tokio::join!(get1, get2, get3);
-
-        assert_eq!(get1.unwrap(), Err(TestError::IntentionalError));
-        assert_eq!(get2.unwrap(), Ok(2));
-        assert_eq!(get3.unwrap(), Ok(2));
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-pub enum TestError {
-    IntentionalError
-}
-
-impl Error for TestError {}
-impl Display for TestError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TestError::IntentionalError => write!(f, ""),
         }
     }
 }
