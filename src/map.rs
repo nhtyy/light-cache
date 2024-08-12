@@ -6,7 +6,8 @@ use std::sync::{Mutex, RwLock};
 use hashbrown::hash_map::{DefaultHashBuilder, HashMap};
 use hashbrown::raw::RawTable;
 
-use crate::waker_node::Wakers;
+mod waker_node;
+pub(crate) use waker_node::Wakers;
 
 /// A concurrent hashmap implementation thats always non-blocking.
 ///
@@ -47,6 +48,12 @@ impl<K, V, S: BuildHasher> LightMap<K, V, S> {
         builder::MapBuilder::new()
             .estimated_size(capacity)
             .build(build_hasher)
+    }
+}
+
+impl<K, V, S> LightMap<K, V, S> {
+    pub fn len(&self) -> usize {
+        self.shards.iter().map(|s| s.table.read().unwrap().len()).sum()
     }
 }
 

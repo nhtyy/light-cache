@@ -5,13 +5,11 @@ use std::future::Future;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-use super::LightCache;
 use crate::map::Shard;
-use crate::waker_node::Wakers;
+use crate::map::Wakers;
 
 use pin_project::pinned_drop;
 
@@ -37,7 +35,9 @@ where
         #[pin]
         fut: Fut,
     },
+    Ready(Option<V>),
 }
+
 
 #[pinned_drop]
 impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrInsertFuture<'a, K, V, S, F, Fut>
@@ -60,7 +60,7 @@ where
                     node.alert_all();
                 }
             }
-            GetOrInsertFutureProj::Waiting { .. } => {}
+            _ => {}
         }
     }
 }
@@ -153,6 +153,9 @@ where
                     } else {
                         return Poll::Pending;
                     }
+                },
+                GetOrInsertFutureProj::Ready(v) => {
+                    return Poll::Ready(v.take().expect("value is none"));
                 }
             }
         }
@@ -182,10 +185,11 @@ where
         #[pin]
         fut: Fut,
     },
+    Ready(Option<V>),
 }
 
 #[pinned_drop]
-impl<'a, K, V, F, S, Fut> PinnedDrop for GetOrTryInsertFuture<'a, K, V, F, S, Fut>
+impl<'a, K, V, S, F, Fut> PinnedDrop for GetOrTryInsertFuture<'a, K, V, S, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
@@ -205,19 +209,18 @@ where
                     node.alert_all();
                 }
             }
-            GetOrTryInsertFutureProj::Waiting { .. } => {}
+            _ => {},
         }
     }
 }
 
-impl<'a, K, V, F, S, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, F, S, Fut>
+impl<'a, K, V, S, F, Fut, E> Future for GetOrTryInsertFuture<'a, K, V, S, F, Fut>
 where
     K: Eq + Hash + Copy,
     V: Clone + Sync,
     S: BuildHasher,
-    F: FnOnce() -> Fut + BuildHasher,
+    F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<V, E>>,
-    E: Sized + Clone,
 {
     type Output = Result<V, E>;
 
@@ -306,6 +309,9 @@ where
                     } else {
                         return Poll::Pending;
                     }
+                },
+                GetOrTryInsertFutureProj::Ready(v) => {
+                    return Poll::Ready(Ok(v.take().expect("Value is none in the future")));
                 }
             }
         }
