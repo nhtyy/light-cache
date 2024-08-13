@@ -3,6 +3,7 @@ use std::sync::MutexGuard;
 
 use crate::LightCache;
 
+pub mod lru;
 pub mod noop;
 pub mod ttl;
 
