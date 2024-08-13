@@ -103,6 +103,8 @@ where
             if tail.should_evict(self.ttl) {
                 let (_, n) = self.arena.remove(idx);
                 cache.remove_no_policy(n.item());
+            } else {
+                break;
             }
         }
     }
@@ -209,7 +211,7 @@ mod test {
 
         insert_n(&cache, 5);
 
-        sleep_seconds(1);
+        sleep_seconds(2);
 
         insert_n(&cache, 2);
 
