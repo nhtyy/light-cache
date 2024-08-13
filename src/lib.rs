@@ -2,6 +2,15 @@
 //! 
 //! # Quick Start
 //! The easiest way to get started with LightCache is to use [`crate::RefreshCache`]
+//! 
+//! # Policy Implementers
+//! LightCache is designed to be flexible and allow for custom policies to be implemented.
+//! If you want to implement your own policy, you should implement the [`crate::Policy`] trait.
+//! And you must use the [`cache::NoPolicy`] in your implementation to access the policy free cache methods.
+//! Using [`LightCache::get`] or any other method that doesnt end in `_no_policy` will cause cause an infinite loop.
+//! 
+//! Another thing to possibly note is that any task using async insertion methods ([`LightCache::get_or_insert`], [`LightCache::get_or_try_insert`], etc)
+//! will always first call [`Policy::get`] but only the task that actually inserts the value will call [`Policy::insert`].
 
 pub mod cache;
 #[doc(inline)]

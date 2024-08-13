@@ -24,7 +24,6 @@ use std::sync::Arc;
 /// [`Self::get_or_insert`] and [`Self::get_or_try_insert`] only allow one worker task at a time to poll thier futures
 /// and will wake up the other tasks when the value is inserted
 /// 
-/// 
 /// ### Race: 
 /// [`Self::get_or_insert_race`] and [`Self::get_or_try_insert_race`] allow all worker tasks to poll thier futures at the same time
 pub struct LightCache<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
