@@ -156,7 +156,7 @@ where
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 #[pin_project::pin_project(project = GetOrTryInsertFutureInnerProj, PinnedDrop)]
-pub enum GetOrInsertFutureInner<'a, K, V, F, Fut>
+enum GetOrInsertFutureInner<'a, K, V, F, Fut>
 where
     K: Copy + Eq + Hash,
 {
@@ -199,7 +199,7 @@ where
     }
 }
 
-pub enum InnerComplete<'a, K, V, O> {
+pub(crate) enum InnerComplete<'a, K, V, O> {
     Insert(K, O, MutexGuard<'a, HashMap<K, Wakers>>),
     Got(V),
 }
