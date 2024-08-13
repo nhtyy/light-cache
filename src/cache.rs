@@ -100,54 +100,36 @@ where
     ///
     /// ### Note
     /// If a call to remove is issued between the time of inserting, and waking up tasks, the other tasks will simply see the empty slot and try again
-    pub fn get_or_insert<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, P, F, Fut>
+    pub async fn get_or_insert<F, Fut>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = V>,
     {
         if let Some(value) = self.get(&key) {
-            return GetOrInsertFuture::Ready(Some(value));
+            return value;
         }
 
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrInsertFuture::Waiting {
-            cache: self,
-            shard,
-            key,
-            init: Some(init),
-            hash,
-            joined: false,
-        }
+        self.get_or_insert_inner(key, init).await
     }
 
-    pub fn get_or_try_insert<F, Fut, Err>(&self, key: K, init: F) -> GetOrTryInsertFuture<K, V, S, P, F, Fut>
+    pub async fn get_or_try_insert<F, Fut, Err>(
+        &self,
+        key: K,
+        init: F,
+    ) -> Result<V, Err>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, Err>>,
     {
         if let Some(value) = self.get(&key) {
-            return GetOrTryInsertFuture::Ready(Some(value));
+            return Ok(value);
         }
 
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrTryInsertFuture::Waiting {
-            cache: self,
-            shard,
-            key,
-            init: Some(init),
-            hash,
-            joined: false,
-        }
+        self.get_or_try_insert_inner(key, init).await
     }
 
     #[inline]
-    pub async fn get_or_insert_race<F, Fut>(
-        &self,
-        key: K,
-        init: F,
-    ) -> V
+    pub async fn get_or_insert_race<F, Fut>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = V>,
@@ -159,11 +141,7 @@ where
         self.get_or_insert_race_inner(key, init).await
     }
 
-    pub async fn get_or_try_insert_race<F, Fut, E>(
-        &self,
-        key: K,
-        init: F,
-    ) -> Result<V, E>
+    pub async fn get_or_try_insert_race<F, Fut, E>(&self, key: K, init: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
@@ -173,35 +151,6 @@ where
         }
 
         self.get_or_try_insert_race_inner(key, init).await
-    }
-
-    #[inline]
-    fn get_or_insert_race_inner<F, Fut>(
-        &self,
-        key: K,
-        init: F,
-    ) -> GetOrInsertRace<K, V, S, P, Fut>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = V>,
-    {
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrInsertRace::new(self, shard, hash, key, init())
-    }
-
-    fn get_or_try_insert_race_inner<F, Fut, E>(
-        &self,
-        key: K,
-        init: F,
-    ) -> GetOrTryInsertRace<K, V, S, P, Fut>
-    where
-        F: FnOnce() -> Fut,
-        Fut: Future<Output = Result<V, E>>,
-    {
-        let (hash, shard) = self.map.shard(&key).unwrap();
-
-        GetOrTryInsertRace::new(self, shard, hash, key, init())
     }
 
     /// Insert a value directly into the cache
@@ -238,5 +187,65 @@ where
     #[inline]
     pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
         self.map.remove(key)
+    }
+}
+
+impl<K, V, S, P> LightCache<K, V, S, P>
+where
+    K: Eq + Hash + Copy,
+    V: Clone + Sync,
+    S: BuildHasher,
+    P: Policy<K, V>,
+{
+    #[inline]
+    fn get_or_insert_inner<F, Fut>(&self, key: K, init: F) -> GetOrInsertFuture<K, V, S, P, F, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrInsertFuture::new(self, shard, hash, key, init)
+    }
+
+    #[inline]
+    fn get_or_try_insert_inner<F, Fut, E>(
+        &self,
+        key: K,
+        init: F,
+    ) -> GetOrTryInsertFuture<K, V, S, P, F, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<V, E>>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrTryInsertFuture::new(self, shard, hash, key, init)
+    }
+
+    #[inline]
+    fn get_or_insert_race_inner<F, Fut>(&self, key: K, init: F) -> GetOrInsertRace<K, V, S, P, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = V>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrInsertRace::new(self, shard, hash, key, init())
+    }
+
+    #[inline]
+    fn get_or_try_insert_race_inner<F, Fut, E>(
+        &self,
+        key: K,
+        init: F,
+    ) -> GetOrTryInsertRace<K, V, S, P, Fut>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<V, E>>,
+    {
+        let (hash, shard) = self.map.shard(&key).unwrap();
+
+        GetOrTryInsertRace::new(self, shard, hash, key, init())
     }
 }

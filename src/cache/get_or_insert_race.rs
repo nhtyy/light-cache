@@ -129,7 +129,7 @@ where
                 // theres a chance our future resolved immediately after we checked the cache
                 // and we didnt even need to insert it
                 if let Some(waiters) = lock.remove(this.key) {
-                    waiters.finsih();
+                    waiters.finish();
                 }
 
                 return Poll::Ready(val);
@@ -255,7 +255,7 @@ where
                 // theres a chance our future resolved immediately after we checked the cache
                 // and we didnt even need to insert it
                 if let Some(waiters) = lock.remove(this.key) {
-                    waiters.finsih();
+                    waiters.finish();
                 }
 
                 return Poll::Ready(Ok(val));

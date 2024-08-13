@@ -37,7 +37,7 @@ impl Wakers {
     }
 
     #[inline]
-    pub(crate) fn finsih(self) {
+    pub(crate) fn finish(self) {
         for waker in self.wakers {
             waker.wake();
         }
