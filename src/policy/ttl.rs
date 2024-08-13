@@ -215,7 +215,7 @@ mod test {
 
         // 1 should be removed by now
         assert_eq!(cache.len(), 2);
-        let policy = cache.policy.inner.lock().unwrap();
+        let policy = cache.policy().lock_inner();
 
         assert_eq!(policy.arena.nodes.len(), 2);
         assert_eq!(policy.arena.head, Some(1));

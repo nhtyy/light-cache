@@ -18,8 +18,10 @@ pub trait Policy<K, V>: Clone {
     /// The inner type of this policy, likely behind a lock
     type Inner: Prune<K, V, Self>;
 
+    /// # Panics
+    /// This method will panic if the lock is poisoned
     fn lock_inner(&self) -> MutexGuard<'_, Self::Inner>;
-
+    
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
     fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V>;

@@ -4,16 +4,20 @@ pub(crate) use get_or_insert::{GetOrInsertFuture, GetOrTryInsertFuture};
 pub(crate) mod get_or_insert_race;
 pub(crate) use get_or_insert_race::{GetOrInsertRace, GetOrTryInsertRace};
 
+mod no_policy;
+pub use no_policy::NoPolicy;
+
 use crate::map::LightMap;
 use crate::policy::{NoopPolicy, Policy};
 pub use hashbrown::hash_map::DefaultHashBuilder;
 
 use std::future::Future;
 use std::hash::{BuildHasher, Hash};
-use std::ops::Deref;
 use std::sync::Arc;
 
 /// A concurrent hashmap that allows for efficient async insertion of values
+/// 
+/// LightCache is cloneable and can be shared across threads, so theres no need to explicitly wrap it in an Arc
 /// 
 /// ## LightCache offers two modes for async insertion:
 /// ### Cooperative: 
@@ -24,7 +28,7 @@ use std::sync::Arc;
 /// ### Race: 
 /// [`Self::get_or_insert_race`] and [`Self::get_or_try_insert_race`] allow all worker tasks to poll thier futures at the same time
 pub struct LightCache<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
-    inner: Arc<LightCacheInner<K, V, S, P>>,
+    pub(crate) inner: Arc<LightCacheInner<K, V, S, P>>,
 }
 
 impl<K, V, S, P> Clone for LightCache<K, V, S, P> {
@@ -35,15 +39,7 @@ impl<K, V, S, P> Clone for LightCache<K, V, S, P> {
     }
 }
 
-impl<K, V, S, P> Deref for LightCache<K, V, S, P> {
-    type Target = LightCacheInner<K, V, S, P>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
-pub struct LightCacheInner<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
+pub(crate) struct LightCacheInner<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
     pub(crate) policy: P,
     map: LightMap<K, V, S>,
 }
@@ -90,7 +86,7 @@ impl<K, V, S: BuildHasher, P> LightCache<K, V, S, P> {
 
 impl<K, V, S, P> LightCache<K, V, S, P> {
     pub fn len(&self) -> usize {
-        self.map.len()
+        self.inner.map.len()
     }
 }
 
@@ -179,13 +175,13 @@ where
     /// This is mostly not a big deal as Wakers is small, and this pattern really should be avoided in practice.
     #[inline]
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        self.policy.insert(key, value, self)
+        self.policy().insert(key, value, self)
     }
 
     /// Try to get a value from the cache
     #[inline]
     pub fn get(&self, key: &K) -> Option<V> {
-        self.policy.get(key, self)
+        self.policy().get(key, self)
     }
 
     /// Remove a value from the cache, returning the value if it was present
@@ -195,28 +191,13 @@ where
     /// it will force them to recompute the value and insert it again.
     #[inline]
     pub fn remove(&self, key: &K) -> Option<V> {
-        self.policy.remove(key, self)
+        self.policy().remove(key, self)
     }
 
     /// Prune the cache of any expired keys
     #[inline]
     pub fn prune(&self) {
-        self.policy.prune(self)
-    }
-
-    #[inline]
-    pub(crate) fn get_no_policy(&self, key: &K) -> Option<V> {
-        self.map.get(key)
-    }
-
-    #[inline]
-    pub(crate) fn insert_no_policy(&self, key: K, value: V) -> Option<V> {
-        self.map.insert(key, value)
-    }
-
-    #[inline]
-    pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
-        self.map.remove(key)
+        self.policy().prune(self)
     }
 }
 
@@ -233,7 +214,7 @@ where
         F: FnOnce() -> Fut,
         Fut: Future<Output = V>,
     {
-        let (hash, shard) = self.map.shard(&key).unwrap();
+        let (hash, shard) = self.inner.map.shard(&key).unwrap();
 
         GetOrInsertFuture::new(self, shard, hash, key, init)
     }
@@ -248,7 +229,7 @@ where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
     {
-        let (hash, shard) = self.map.shard(&key).unwrap();
+        let (hash, shard) = self.inner.map.shard(&key).unwrap();
 
         GetOrTryInsertFuture::new(self, shard, hash, key, init)
     }
@@ -259,7 +240,7 @@ where
         F: FnOnce() -> Fut,
         Fut: Future<Output = V>,
     {
-        let (hash, shard) = self.map.shard(&key).unwrap();
+        let (hash, shard) = self.inner.map.shard(&key).unwrap();
 
         GetOrInsertRace::new(self, shard, hash, key, init())
     }
@@ -274,8 +255,35 @@ where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<V, E>>,
     {
-        let (hash, shard) = self.map.shard(&key).unwrap();
+        let (hash, shard) = self.inner.map.shard(&key).unwrap();
 
         GetOrTryInsertRace::new(self, shard, hash, key, init())
+    }
+}
+
+impl<K, V, S, P> LightCache<K, V, S, P>
+where
+    K: Eq + Hash + Copy,
+    V: Clone + Sync,
+    S: BuildHasher,
+{
+    #[inline]
+    pub(crate) fn get_no_policy(&self, key: &K) -> Option<V> {
+        self.inner.map.get(key)
+    }
+
+    #[inline]
+    pub(crate) fn insert_no_policy(&self, key: K, value: V) -> Option<V> {
+        self.inner.map.insert(key, value)
+    }
+
+    #[inline]
+    pub(crate) fn remove_no_policy(&self, key: &K) -> Option<V> {
+        self.inner.map.remove(key)
+    }
+
+    #[inline]
+    pub(crate) fn policy(&self) -> &P {
+        &self.inner.policy
     }
 }
