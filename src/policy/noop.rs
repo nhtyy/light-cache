@@ -4,6 +4,7 @@ use crate::LightCache;
 use super::{Policy, Prune};
 
 #[derive(Clone, Copy, Debug)]
+/// A policy that does nothing
 pub struct NoopPolicy;
 
 impl<K, V> Policy<K, V> for NoopPolicy

@@ -14,6 +14,15 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 /// A concurrent hashmap that allows for efficient async insertion of values
+/// 
+/// ## LightCache offers two modes for async insertion:
+/// ### Cooperative: 
+/// [`Self::get_or_insert`] and [`Self::get_or_try_insert`] only allow one worker task at a time to poll thier futures
+/// and will wake up the other tasks when the value is inserted
+/// 
+/// 
+/// ### Race: 
+/// [`Self::get_or_insert_race`] and [`Self::get_or_try_insert_race`] allow all worker tasks to poll thier futures at the same time
 pub struct LightCache<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
     inner: Arc<LightCacheInner<K, V, S, P>>,
 }
@@ -134,7 +143,7 @@ where
     /// Get or insert a value into the cache, but instead of waiting for a single caller to finish the insertion (coopertively),
     /// any callers of this method will always attempt to poll thier own future
     /// 
-    /// This is safe to use with and other get_or_* method
+    /// This is safe to use with any other get_or_* method
     pub async fn get_or_insert_race<F, Fut>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> Fut,
@@ -164,7 +173,7 @@ where
     /// 
     /// ## Warning: 
     /// Doing a [`Self::insert`] while another task is doing any type of async write ([Self::get_or_insert], [Self::get_or_try_insert], etc)
-    /// will "leak" a [`crate::map::Wakers`] entry, which will never be removed unless another `get_or_*` method is fully completed without being
+    /// will "leak" a wakers entry, which will never be removed unless another `get_or_*` method is fully completed without being
     /// interrupted by a call to this method.
     /// 
     /// This is mostly not a big deal as Wakers is small, and this pattern really should be avoided in practice.

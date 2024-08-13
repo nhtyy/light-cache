@@ -22,10 +22,6 @@ tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "ti
 name = "light_cache"
 harness = false
 
-# [[bench]]
-# name = "moka"
-# harness = false
-
 [[bench]]
 name = "quick_cache"
 harness = false

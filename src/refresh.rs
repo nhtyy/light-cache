@@ -26,11 +26,12 @@ where
 }
 
 /// A [`RefreshCache`] provides a simple interface for caching values with a time-to-live policy
-// 
+/// for any type that maps a key to a value asynchronously
+///
 /// This is a replacment for directly using [`LightCache`] 
 /// with a [`TtlPolicy`] and calling [`LightCache::get_or_try_insert`] everywhere
 pub struct RefreshCache<K, V, R> {
-    pub cache: LightCache<K, V, DefaultHashBuilder, TtlPolicy<K, V>>,
+    cache: LightCache<K, V, DefaultHashBuilder, TtlPolicy<K, V>>,
     refresh: R,
 }
 
