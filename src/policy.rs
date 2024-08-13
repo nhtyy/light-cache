@@ -15,7 +15,7 @@ pub use ttl::TtlPolicy;
 /// A [Policy] augments accsess to a [LightCache] instance, managing the entry and eviction of items in the cache.
 ///
 /// A policy usally requires shared mutable state, therefore the [`Policy::Inner`] type is used to represent this.
-pub trait Policy<K, V>: Clone {
+pub trait Policy<K, V>: Sized {
     /// The inner type of this policy, likely behind a lock
     type Inner: Prune<K, V, Self>;
 
