@@ -2,6 +2,9 @@
 name = "light-cache"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Async focused caching library"
+repository = "https://github.com/nhtyy/light-cache"
 
 [dependencies]
 pin-project = "1.1.5"
