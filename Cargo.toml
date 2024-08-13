@@ -3,13 +3,9 @@ name = "light-cache"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-tokio_spawn_policy = ["dep:tokio"]
-
 [dependencies]
 pin-project = "1.1.5"
 hashbrown = { version = "0.14", default-features = false, features = ["raw", "ahash"] }
-tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros", "time", "sync"], optional = true }
 tracing = "0.1.40"
 
 [dev-dependencies]
