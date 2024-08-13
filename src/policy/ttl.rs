@@ -63,7 +63,7 @@ where
         cache.get_no_policy(key)
     }
 
-    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) {
+    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         {
             let mut inner = self.lock_inner();
             inner.prune(cache);
@@ -78,7 +78,7 @@ where
             }
         }
 
-        cache.insert_no_policy(key, value);
+        cache.insert_no_policy(key, value)
     }
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {

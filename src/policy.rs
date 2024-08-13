@@ -11,7 +11,7 @@ mod linked_arena;
 pub use noop::NoopPolicy;
 pub use ttl::TtlPolicy;
 
-/// A [Policy] augments a [LightCache] instance, managing the entry and eviction of items in the cache
+/// A [Policy] augments accsess to a [LightCache] instance, managing the entry and eviction of items in the cache.
 ///
 /// A policy usally requires shared mutable state, therefore the [`Policy::Inner`] type is used to represent this.
 pub trait Policy<K, V>: Clone {
@@ -22,11 +22,12 @@ pub trait Policy<K, V>: Clone {
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
-    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>);
+    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
-    /// # Warning: Calling this while holding a lock from [`Policy::lock_inner`] will deadlock
+    /// # Warning: 
+    /// Calling this method while holding a lock from [`Policy::lock_inner`] will cause a deadlock
     fn prune<S: BuildHasher>(&self, cache: &LightCache<K, V, S, Self>) {
         self.lock_inner().prune(cache)
     }
@@ -34,7 +35,7 @@ pub trait Policy<K, V>: Clone {
 
 /// [Prune] controls how entries are expired (not nescessarily evicted) from the cache
 pub trait Prune<K, V, P> {
-    /// Prune is typically be called before any operation on the cahce, or the policy
+    /// Prune is typically be called before any operation on the cahce
     ///
     /// For instance: An LRU w/ expiration would prune expired entries before checking if its full
     fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, P>);

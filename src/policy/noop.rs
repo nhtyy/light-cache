@@ -23,7 +23,7 @@ where
     }
 
     #[inline]
-    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) {
+    fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         cache.insert_no_policy(key, value)
     }
 

@@ -21,11 +21,18 @@ impl MapBuilder {
         }
     }
 
+    /// Set the number of shards
+    /// 
+    /// This will be rounded up to the next power of two, but by default it will be 4 times the number of cores
+    /// since this is the number of possible parrallel operations
     pub fn shards(mut self, shards: usize) -> Self {
         self.shards = Some(shards);
         self
     }
 
+    /// Set the estimated size of the map
+    /// 
+    /// Used to preallocate the map
     pub fn estimated_size(mut self, estimated_size: usize) -> Self {
         self.estimated_size = Some(estimated_size);
         self
@@ -55,6 +62,7 @@ impl MapBuilder {
             }
         }
 
+        // we have no estimated size or theres more shards
         let shards = (0..shards)
             .map(|_| Shard {
                 waiters: Mutex::new(HashMap::new()),

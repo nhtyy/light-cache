@@ -98,7 +98,7 @@ where
     /// tasks will cooperativley compute the value and notify the other task when the value is inserted.
     /// If a task fails to insert the value, (via panic or error) another task will take over until theyve all tried.
     ///
-    /// ### Note
+    /// ## Note
     /// If a call to remove is issued between the time of inserting, and waking up tasks, the other tasks will simply see the empty slot and try again
     pub async fn get_or_insert<F, Fut>(&self, key: K, init: F) -> V
     where
@@ -112,6 +112,9 @@ where
         self.get_or_insert_inner(key, init).await
     }
 
+    /// Get or insert the value for the given key, returning an error if the value could not be inserted
+    /// 
+    /// See [`Self::get_or_insert`] for more information
     pub async fn get_or_try_insert<F, Fut, Err>(
         &self,
         key: K,
@@ -128,7 +131,10 @@ where
         self.get_or_try_insert_inner(key, init).await
     }
 
-    #[inline]
+    /// Get or insert a value into the cache, but instead of waiting for a single caller to finish the insertion (coopertively),
+    /// any callers of this method will always attempt to poll thier own future
+    /// 
+    /// This is safe to use with and other get_or_* method
     pub async fn get_or_insert_race<F, Fut>(&self, key: K, init: F) -> V
     where
         F: FnOnce() -> Fut,
@@ -141,6 +147,7 @@ where
         self.get_or_insert_race_inner(key, init).await
     }
 
+    /// See [`Self::get_or_insert_race`] for more information
     pub async fn get_or_try_insert_race<F, Fut, E>(&self, key: K, init: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,
@@ -154,24 +161,38 @@ where
     }
 
     /// Insert a value directly into the cache
-    ///
-    /// This function doesn't take into account any pending insertions from [`Self::get_or_insert`] or [`Self::get_or_try_insert`]
-    /// and will not wait for them to complete, which means it could be overwritten by another task quickly.
-    pub fn insert(&self, key: K, value: V) {
+    /// 
+    /// ## Warning: 
+    /// Doing a [`Self::insert`] while another task is doing any type of async write ([Self::get_or_insert], [Self::get_or_try_insert], etc)
+    /// will "leak" a [`crate::map::Wakers`] entry, which will never be removed unless another `get_or_*` method is fully completed without being
+    /// interrupted by a call to this method.
+    /// 
+    /// This is mostly not a big deal as Wakers is small, and this pattern really should be avoided in practice.
+    #[inline]
+    pub fn insert(&self, key: K, value: V) -> Option<V> {
         self.policy.insert(key, value, self)
     }
 
     /// Try to get a value from the cache
+    #[inline]
     pub fn get(&self, key: &K) -> Option<V> {
         self.policy.get(key, self)
     }
 
     /// Remove a value from the cache, returning the value if it was present
     ///
+    /// ## Note: 
     /// If this is called while another task is trying to [`Self::get_or_insert`] or [`Self::get_or_try_insert`],
     /// it will force them to recompute the value and insert it again.
+    #[inline]
     pub fn remove(&self, key: &K) -> Option<V> {
         self.policy.remove(key, self)
+    }
+
+    /// Prune the cache of any expired keys
+    #[inline]
+    pub fn prune(&self) {
+        self.policy.prune(self)
     }
 
     #[inline]
@@ -180,8 +201,8 @@ where
     }
 
     #[inline]
-    pub(crate) fn insert_no_policy(&self, key: K, value: V) {
-        self.map.insert(key, value);
+    pub(crate) fn insert_no_policy(&self, key: K, value: V) -> Option<V> {
+        self.map.insert(key, value)
     }
 
     #[inline]

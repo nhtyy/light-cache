@@ -148,7 +148,10 @@ where
                     }
                 }
             }
-            InnerComplete::Got(value) => Poll::Ready(Ok(value)),
+            InnerComplete::Got(value) => {
+                // dont need to alert the policy here since we did a get before we entered this future
+                Poll::Ready(Ok(value))
+            },
         }
     }
 }

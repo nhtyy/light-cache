@@ -6,28 +6,27 @@ use std::future::Future;
 use std::hash::Hash;
 use std::time::Duration;
 
-/// A `Refresh` is a type with a method [Refresh::get] that maps a key to a value asynchronously
-pub trait Refresh<K, V> {
+/// A [`Refresher`] maps a key to a value asynchronously
+pub trait Refresher<K, V> {
     type Error;
 
-    fn get(&self, key: K) -> impl Future<Output = Result<V, Self::Error>>;
+    fn get(&self, key: K) -> impl Future<Output = Result<V, Self::Error>> + Send;
 }
 
-impl<K, V, F, Fut, E> Refresh<K, V> for F
+impl<K, V, F, Fut, E> Refresher<K, V> for F
 where
     F: Fn(K) -> Fut,
-    Fut: Future<Output = Result<V, E>>,
+    Fut: Future<Output = Result<V, E>> + Send,
 {
     type Error = E;
 
-    fn get(&self, key: K) -> impl Future<Output = Result<V, E>> {
+    fn get(&self, key: K) -> impl Future<Output = Result<V, E>> + Send {
         self(key)
     }
 }
 
-/// The [`RefreshCache`] is a cache that will refresh the value if it is expired
-/// It must be created with a [`Refresh`] implementation that will fetch the value from an external source
-/// 
+/// A [`RefreshCache`] provides a simple interface for caching values with a time-to-live policy
+// 
 /// This is a replacment for directly using [`LightCache`] 
 /// with a [`TtlPolicy`] and calling [`LightCache::get_or_try_insert`] everywhere
 pub struct RefreshCache<K, V, R> {
@@ -39,7 +38,7 @@ impl<K, V, R, E> RefreshCache<K, V, R>
 where
     K: Copy + Eq + Hash,
     V: Clone + Sync,
-    R: Refresh<K, V, Error = E>,
+    R: Refresher<K, V, Error = E>,
 {
     pub fn new(refresh: R, ttl: Duration) -> Self {
         Self {
