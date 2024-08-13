@@ -234,6 +234,16 @@ where
         }
     }
 
+    pub(crate) fn head(&self) -> Option<(usize, &N)> {
+        // saftey: head is always a valid index
+        self.head.map(|idx| (idx, unsafe { self.nodes.get_unchecked(idx) }))
+    }
+
+    pub(crate) fn tail(&self) -> Option<(usize, &N)> {
+        // saftey: tail is always a valid index
+        self.tail.map(|idx| (idx, unsafe { self.nodes.get_unchecked(idx) }))
+    }
+
     pub(crate) fn len(&self) -> usize {
         self.nodes.len()
     }

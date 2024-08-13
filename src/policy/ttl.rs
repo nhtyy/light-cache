@@ -99,13 +99,10 @@ where
     V: Clone + Sync,
 {
     fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, TtlPolicy<K, V>>) {
-        while let Some(tail) = self.arena.tail {
-            // saftey: we should have a valid tail index
-            if unsafe { self.arena.nodes.get_unchecked(tail).should_evict(self.ttl) } {
-                let (_, n) = self.arena.remove(tail);
+        while let Some((idx, tail)) = self.arena.tail() {
+            if tail.should_evict(self.ttl) {
+                let (_, n) = self.arena.remove(idx);
                 cache.remove_no_policy(n.item());
-            } else {
-                break;
             }
         }
     }
