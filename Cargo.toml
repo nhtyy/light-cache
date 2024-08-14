@@ -10,6 +10,7 @@ repository = "https://github.com/nhtyy/light-cache"
 pin-project = "1.1.5"
 hashbrown = { version = "0.14", default-features = false, features = ["raw", "ahash"] }
 tracing = "0.1.40"
+priority-queue = "2.1.0"
 
 [dev-dependencies]
 quick_cache = "0.6.2"
