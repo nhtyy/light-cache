@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
@@ -14,18 +14,9 @@ use crate::LightCache;
 
 /// A simple time-to-live policy that removes only expired keys when the ttl is exceeded
 pub struct TtlPolicy<K, V> {
-    inner: Arc<Mutex<TtlPolicyInner<K>>>,
+    inner: Mutex<TtlPolicyInner<K>>,
     /// borrow chcker complains and requires fully qualified syntax without this which is annoying
     phantom: PhantomData<V>,
-}
-
-impl<K, V> Clone for TtlPolicy<K, V> {
-    fn clone(&self) -> Self {
-        TtlPolicy {
-            inner: self.inner.clone(),
-            phantom: self.phantom,
-        }
-    }
 }
 
 pub struct TtlPolicyInner<K> {
@@ -36,10 +27,10 @@ pub struct TtlPolicyInner<K> {
 impl<K, V> TtlPolicy<K, V> {
     pub fn new(ttl: Duration) -> Self {
         TtlPolicy {
-            inner: Arc::new(Mutex::new(TtlPolicyInner {
+            inner: Mutex::new(TtlPolicyInner {
                 ttl,
                 arena: LinkedArena::new(),
-            })),
+            }),
             phantom: PhantomData,
         }
     }

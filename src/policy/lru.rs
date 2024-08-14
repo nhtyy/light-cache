@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
     cmp::Reverse,
 };
@@ -17,18 +17,9 @@ use crate::LightCache;
 
 /// An LRU policy with optional expiry.
 pub struct LruPolicy<K, V> {
-    inner: Arc<Mutex<LruPolicyInner<K>>>,
+    inner: Mutex<LruPolicyInner<K>>,
     /// borrow chcker complains and requires fully qualified syntax without this which is annoying
     phantom: PhantomData<V>,
-}
-
-impl<K, V> Clone for LruPolicy<K, V> {
-    fn clone(&self) -> Self {
-        LruPolicy {
-            inner: self.inner.clone(),
-            phantom: self.phantom,
-        }
-    }
 }
 
 pub struct LruPolicyInner<K> {
@@ -44,11 +35,11 @@ impl<K: Hash + Eq, V> LruPolicy<K, V> {
         assert!(capacity > 1, "LRU capacity must be greater than 1");
 
         LruPolicy {
-            inner: Arc::new(Mutex::new(LruPolicyInner {
+            inner: Mutex::new(LruPolicyInner {
                 capacity,
                 arena: LinkedArena::new(),
                 expiring: ttl.map(|ttl| (ttl, PriorityQueue::new())),
-            })),
+            }),
             phantom: PhantomData,
         }
     }
