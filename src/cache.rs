@@ -48,7 +48,7 @@ impl<K, V> LightCache<K, V> {
         LightCache {
             inner: Arc::new(LightCacheInner {
                 map: LightMap::new(),
-                policy: NoopPolicy,
+                policy: NoopPolicy::new(),
             }),
         }
     }
@@ -57,7 +57,7 @@ impl<K, V> LightCache<K, V> {
         LightCache {
             inner: Arc::new(LightCacheInner {
                 map: LightMap::with_capacity(capacity),
-                policy: NoopPolicy,
+                policy: NoopPolicy::new(),
             }),
         }
     }

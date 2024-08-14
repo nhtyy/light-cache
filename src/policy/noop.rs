@@ -1,11 +1,21 @@
-use std::{hash::BuildHasher, sync::MutexGuard};
+use std::{hash::BuildHasher, sync::{Mutex, MutexGuard}};
 
 use crate::LightCache;
 use super::{Policy, Prune};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 /// A policy that does nothing
-pub struct NoopPolicy;
+/// 
+/// While this policy does nothing, we still need to give it a mutex so that it can satisfy the Policy trait
+/// It would not be good if a user accidently called prune on a noop policy and got a panic
+pub struct NoopPolicy(Mutex<()>);
+
+impl NoopPolicy {
+    /// Create a new NoopPolicy
+    pub fn new() -> Self {
+        NoopPolicy(Mutex::new(()))
+    }
+}
 
 impl<K, V> Policy<K, V> for NoopPolicy
 where
@@ -15,7 +25,7 @@ where
     type Inner = ();
 
     fn lock_inner(&self) -> MutexGuard<()> {
-        unreachable!("You should not be calling inner on noop policy")
+        self.0.lock().unwrap()
     }
 
     #[inline]
