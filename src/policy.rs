@@ -11,6 +11,7 @@ mod linked_arena;
 
 pub use noop::NoopPolicy;
 pub use ttl::TtlPolicy;
+pub use lru::LruPolicy;
 
 /// A [Policy] augments accsess to a [LightCache] instance, managing the entry and eviction of items in the cache.
 ///
