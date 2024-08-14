@@ -19,13 +19,14 @@ use std::sync::Arc;
 /// 
 /// LightCache is cloneable and can be shared across threads, so theres no need to explicitly wrap it in an Arc
 /// 
-/// ## LightCache offers two modes for async insertion:
+/// ## LightCache offers two modes for async insertion
+/// 
 /// ### Cooperative: 
-/// [`Self::get_or_insert`] and [`Self::get_or_try_insert`] only allow one worker task at a time to poll thier futures
+/// [`Self::get_or_insert`] and [`Self::get_or_try_insert`] only allow one worker task at a time to poll their futures
 /// and will wake up the other tasks when the value is inserted
 /// 
 /// ### Race: 
-/// [`Self::get_or_insert_race`] and [`Self::get_or_try_insert_race`] allow all worker tasks to poll thier futures at the same time
+/// [`Self::get_or_insert_race`] and [`Self::get_or_try_insert_race`] allow all worker tasks to poll their futures at the same time
 pub struct LightCache<K, V, S = DefaultHashBuilder, P = NoopPolicy> {
     pub(crate) inner: Arc<LightCacheInner<K, V, S, P>>,
 }
@@ -136,7 +137,7 @@ where
     }
 
     /// Get or insert a value into the cache, but instead of waiting for a single caller to finish the insertion (coopertively),
-    /// any callers of this method will always attempt to poll thier own future
+    /// any callers of this method will always attempt to poll their own future
     /// 
     /// This is safe to use with any other get_or_* method
     pub async fn get_or_insert_race<F, Fut>(&self, key: K, init: F) -> V

@@ -84,7 +84,6 @@ where
     pub(crate) fn shard(&self, key: &K) -> Option<(u64, &Shard<K, V>)> {
         let hash = hash_key(&self.build_hasher, key);
 
-        // todo
         let idx = hash as usize % self.shards.len();
         self.shards.get(idx).map(|s| (hash, s))
     }
