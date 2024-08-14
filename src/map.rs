@@ -17,12 +17,12 @@ pub struct LightMap<K, V, S = DefaultHashBuilder> {
     shards: Box<[Shard<K, V>]>,
 }
 
-pub struct Shard<K, V> {
+pub(crate) struct Shard<K, V> {
     pub(crate) waiters: Mutex<HashMap<K, Wakers>>,
-    pub(crate) table: RwLock<RawTable<Entry<K, V>>>,
+    table: RwLock<RawTable<Entry<K, V>>>,
 }
 
-pub struct Entry<K, V> {
+struct Entry<K, V> {
     key: K,
     value: V,
 }
