@@ -2,10 +2,11 @@ use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
     cmp::Reverse,
 };
+
+use parking_lot::{Mutex, MutexGuard};
 
 use priority_queue::PriorityQueue;
 
@@ -54,7 +55,7 @@ where
 
     #[inline]
     fn lock_inner(&self) -> MutexGuard<'_, Self::Inner> {
-        self.inner.lock().unwrap()
+        self.inner.lock()
     }
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
@@ -92,7 +93,7 @@ where
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         {
-            let mut inner = self.lock_inner();
+            let mut inner = self.lock_and_prune(cache);
             inner.arena.remove_item(key);
 
             if let Some((_, pq)) = inner.expiring.as_mut() {

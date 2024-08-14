@@ -1,6 +1,6 @@
 [package]
 name = "light-cache"
-version = "0.2.45"
+version = "0.2.5"
 edition = "2021"
 license = "MIT"
 description = "Async focused caching library"
@@ -11,6 +11,7 @@ pin-project = "1.1.5"
 hashbrown = { version = "0.14", default-features = false, features = ["raw", "ahash"] }
 tracing = "0.1.40"
 priority-queue = "2.1.0"
+parking_lot = "0.12.3"
 
 [dev-dependencies]
 quick_cache = "0.6.2"

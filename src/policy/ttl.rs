@@ -2,9 +2,10 @@ use std::{
     fmt::Debug,
     hash::{BuildHasher, Hash},
     marker::PhantomData,
-    sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
 };
+
+use parking_lot::{Mutex, MutexGuard};
 
 use super::{
     linked_arena::{LinkedArena, LinkedNode},
@@ -45,7 +46,7 @@ where
 
     #[inline]
     fn lock_inner(&self) -> MutexGuard<'_, Self::Inner> {
-        self.inner.lock().unwrap()
+        self.inner.lock()
     }
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {

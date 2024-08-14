@@ -1,4 +1,6 @@
-use std::{hash::BuildHasher, sync::{Mutex, MutexGuard}};
+use std::hash::BuildHasher;
+
+use parking_lot::{Mutex, MutexGuard};
 
 use crate::LightCache;
 use super::{Policy, Prune};
@@ -25,7 +27,7 @@ where
     type Inner = ();
 
     fn lock_inner(&self) -> MutexGuard<()> {
-        self.0.lock().unwrap()
+        self.0.lock()
     }
 
     #[inline]

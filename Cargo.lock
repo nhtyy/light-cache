@@ -486,11 +486,12 @@ checksum = "97b3888a4aecf77e811145cadf6eef5901f4782c53886191b2f693f24761847c"
 
 [[package]]
 name = "light-cache"
-version = "0.2.45"
+version = "0.2.5"
 dependencies = [
  "criterion",
  "hashbrown 0.14.5",
  "moka",
+ "parking_lot",
  "pin-project",
  "priority-queue",
  "quick_cache",

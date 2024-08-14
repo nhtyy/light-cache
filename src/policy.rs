@@ -1,5 +1,5 @@
 use std::hash::BuildHasher;
-use std::sync::MutexGuard;
+use parking_lot::MutexGuard;
 
 use crate::LightCache;
 
