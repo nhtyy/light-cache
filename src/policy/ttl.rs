@@ -58,15 +58,14 @@ where
     }
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
-        self.prune(cache);
+        let _lock = self.lock_and_prune(cache);
 
         cache.get_no_policy(key)
     }
 
     fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         {
-            let mut inner = self.lock_inner();
-            inner.prune(cache);
+            let mut inner = self.lock_and_prune(cache);
 
             // were updating the value, so lets reset the creation time
             if let Some((idx, node)) = inner.arena.get_node_mut(&key) {
@@ -110,7 +109,7 @@ where
     }
 }
 
-pub struct TtlNode<K> {
+struct TtlNode<K> {
     key: K,
     creation: Instant,
     parent: Option<usize>,

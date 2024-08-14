@@ -11,10 +11,3 @@ Fundamentally, this is because we bound `V: Clone`, so even if there was content
 Instead larger `V` should be wrapped in an `Arc` before being inserted into the cache.
 
 LightCache currently ships with a couple predefined eviction policies and some helpers for creating new ones. 
-
-### Plans
-- Proper benchmarks
-- Create a `KeyOrHash<K>` to manage keys longer than 32 bytes
-- LRU
-- LFU
-- get by ref

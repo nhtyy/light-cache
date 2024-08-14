@@ -5,3 +5,6 @@
     - Introdce NoPolicy trait for implementors
 # 0.2.2 2024-08-13
     - Doc changes
+# 0.2.4 2024-08-13
+    - LRU
+    - Doc Changes

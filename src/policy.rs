@@ -29,17 +29,16 @@ pub trait Policy<K, V>: Sized {
 
     fn remove<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V>;
 
-    /// # Warning: 
-    /// Calling this method while holding a lock from [`Policy::lock_inner`] will cause a deadlock
-    fn prune<S: BuildHasher>(&self, cache: &LightCache<K, V, S, Self>) {
-        self.lock_inner().prune(cache)
+    fn lock_and_prune<S: BuildHasher>(&self, cache: &LightCache<K, V, S, Self>) -> MutexGuard<'_, Self::Inner> {
+        let mut lock = self.lock_inner();
+        lock.prune(cache);
+
+        lock
     }
 }
 
 /// [Prune] should control how entries are expired (not nescessarily evicted) from the cache
 pub trait Prune<K, V, P> {
     /// Prune is typically be called before any operation on the cahce
-    ///
-    /// For instance: An LRU w/ expiration would prune expired entries before checking if its full
     fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, P>);
 }

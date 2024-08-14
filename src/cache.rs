@@ -196,7 +196,8 @@ where
     /// Prune the cache of any expired keys
     #[inline]
     pub fn prune(&self) {
-        self.policy().prune(self)
+        // todo: can we disblae must use warning? compiler should ignore the assignment though
+        let _lock = self.policy().lock_and_prune(self);
     }
 }
 

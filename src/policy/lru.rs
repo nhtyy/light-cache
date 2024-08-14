@@ -15,7 +15,7 @@ use super::{
 };
 use crate::LightCache;
 
-/// A simple least-recently-used policy that removes entries based on capacity and usage recency
+/// An LRU policy with optional expiry.
 pub struct LruPolicy<K, V> {
     inner: Arc<Mutex<LruPolicyInner<K>>>,
     /// borrow chcker complains and requires fully qualified syntax without this which is annoying
@@ -38,27 +38,19 @@ pub struct LruPolicyInner<K> {
 }
 
 impl<K: Hash + Eq, V> LruPolicy<K, V> {
-    pub fn new(capacity: usize, node_lifetime: Option<Duration>) -> Self {
-        if let Some(duration) = node_lifetime {
-            LruPolicy {
-                inner: Arc::new(Mutex::new(LruPolicyInner {
-                    capacity,
-                    arena: LinkedArena::new(),
-                    expiring: Some((duration, PriorityQueue::new())),
-                })),
-                phantom: PhantomData,
-            }
-        } else {
-            LruPolicy {
-                inner: Arc::new(Mutex::new(LruPolicyInner {
-                    capacity,
-                    arena: LinkedArena::new(),
-                    expiring: None,
-                })),
-                phantom: PhantomData,
-            }
+    /// # Panics: 
+    /// If capacity is not greater than 1
+    pub fn new(capacity: usize, ttl: Option<Duration>) -> Self {
+        assert!(capacity > 1, "LRU capacity must be greater than 1");
+
+        LruPolicy {
+            inner: Arc::new(Mutex::new(LruPolicyInner {
+                capacity,
+                arena: LinkedArena::new(),
+                expiring: ttl.map(|ttl| (ttl, PriorityQueue::new())),
+            })),
+            phantom: PhantomData,
         }
-        
     }
 }
 
@@ -76,11 +68,9 @@ where
 
     fn get<S: BuildHasher>(&self, key: &K, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         {
-            let mut inner = self.lock_inner();
-            inner.prune(cache);
+            let mut inner = self.lock_and_prune(cache);
 
-            if let Some((idx, node)) = inner.arena.get_node_mut(&key) {
-                let mut inner = self.lock_inner();
+            if let Some((idx, _)) = inner.arena.get_node_mut(&key) {
                 inner.arena.move_to_head(idx);
             }
         }
@@ -90,18 +80,17 @@ where
 
     fn insert<S: BuildHasher>(&self, key: K, value: V, cache: &LightCache<K, V, S, Self>) -> Option<V> {
         {
-            let mut inner = self.lock_inner();
-            inner.prune(cache);
+            let mut inner = self.lock_and_prune(cache);
 
             // were updating the value, so lets reset the creation time
-            if let Some((idx, node)) = inner.arena.get_node_mut(&key) {
+            if let Some((idx, _)) = inner.arena.get_node_mut(&key) {
                 inner.arena.move_to_head(idx);
             } else {
                 inner.arena.insert_head(key);
             }
 
-            if let Some((_, pq)) = inner.expiring.as_mut() {
-                pq.push(key, Reverse(Instant::now()));
+            if let Some((duration, pq)) = inner.expiring.as_mut() {
+                pq.push(key, Reverse(Instant::now() + *duration));
             }
 
             inner.evict(cache);
@@ -130,23 +119,11 @@ where
     V: Clone + Sync,
 {
     fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, LruPolicy<K, V>>) {
-        while let Some((idx, _)) = self.arena.tail() {
-            if self.arena.len() > self.capacity {
-                let (_, n) = self.arena.remove(idx);
-                cache.remove_no_policy(n.item());
-                if let Some((_, pq)) = self.expiring.as_mut() {
-                    pq.remove(&n.key);
-                }
-            } else {
-                break;
-            }
-        }
-        if let Some((lifetime, pq)) = self.expiring.as_mut() {
-            while let Some(top) = pq.peek() {
-                let now = Instant::now();
-                if now.duration_since(top.1.0) > *lifetime {
-                    self.arena.remove_item(top.0);
-                    cache.remove_no_policy(top.0);
+        if let Some((_, pq)) = self.expiring.as_mut() {
+            while let Some((key, expiry)) = pq.peek() {
+                if expiry.0 < Instant::now() {
+                    self.arena.remove_item(key);
+                    cache.remove_no_policy(key);
                     pq.pop();
                 } else {
                     break;
@@ -158,21 +135,22 @@ where
 
 impl<K: Copy + Eq + Hash> LruPolicyInner<K> {
     fn evict<S: BuildHasher, V: Clone + Sync>(&mut self, cache: &LightCache<K, V, S, LruPolicy<K, V>>) {
-        while let Some((idx, _)) = self.arena.tail() {
-            if self.arena.len() > self.capacity {
+        if self.arena.len() > self.capacity {
+            // were called after every insert, so there should never be more than one item to evict
+            if let Some((idx, _)) = self.arena.tail() {
                 let (_, n) = self.arena.remove(idx);
+
                 cache.remove_no_policy(n.item());
+
                 if let Some((_, pq)) = self.expiring.as_mut() {
                     pq.remove(&n.key);
                 }
-            } else {
-                break;
             }
         }
     }
 }
 
-pub struct LruNode<K> {
+struct LruNode<K> {
     key: K,
     prev: Option<usize>,
     next: Option<usize>,
