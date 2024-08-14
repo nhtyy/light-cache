@@ -33,20 +33,18 @@ impl<K, V> Clone for LruPolicy<K, V> {
 
 pub struct LruPolicyInner<K> {
     capacity: usize,
-    node_lifetime: Option<Duration>,
     arena: LinkedArena<K, LruNode<K>>,
-    expiring: Option<PriorityQueue<K, Reverse<Instant>>>,
+    expiring: Option<(Duration, PriorityQueue<K, Reverse<Instant>>)>,
 }
 
 impl<K: Hash + Eq, V> LruPolicy<K, V> {
     pub fn new(capacity: usize, node_lifetime: Option<Duration>) -> Self {
-        if let Some(_) = node_lifetime {
+        if let Some(duration) = node_lifetime {
             LruPolicy {
                 inner: Arc::new(Mutex::new(LruPolicyInner {
                     capacity,
-                    node_lifetime,
                     arena: LinkedArena::new(),
-                    expiring: Some(PriorityQueue::new()),
+                    expiring: Some((duration, PriorityQueue::new())),
                 })),
                 phantom: PhantomData,
             }
@@ -54,7 +52,6 @@ impl<K: Hash + Eq, V> LruPolicy<K, V> {
             LruPolicy {
                 inner: Arc::new(Mutex::new(LruPolicyInner {
                     capacity,
-                    node_lifetime: None,
                     arena: LinkedArena::new(),
                     expiring: None,
                 })),
@@ -103,11 +100,11 @@ where
                 inner.arena.insert_head(key);
             }
 
-            if let Some(pq) = inner.expiring.as_mut() {
+            if let Some((_, pq)) = inner.expiring.as_mut() {
                 pq.push(key, Reverse(Instant::now()));
             }
 
-            inner.prune(cache);
+            inner.evict(cache);
         }
         
         cache.insert_no_policy(key, value)
@@ -118,7 +115,7 @@ where
             let mut inner = self.lock_inner();
             inner.arena.remove_item(key);
 
-            if let Some(pq) = inner.expiring.as_mut() {
+            if let Some((_, pq)) = inner.expiring.as_mut() {
                 pq.remove(key);
             }
         }
@@ -137,17 +134,17 @@ where
             if self.arena.len() > self.capacity {
                 let (_, n) = self.arena.remove(idx);
                 cache.remove_no_policy(n.item());
-                if let Some(pq) = self.expiring.as_mut() {
+                if let Some((_, pq)) = self.expiring.as_mut() {
                     pq.remove(&n.key);
                 }
             } else {
                 break;
             }
         }
-        if let Some(pq) = self.expiring.as_mut() {
+        if let Some((lifetime, pq)) = self.expiring.as_mut() {
             while let Some(top) = pq.peek() {
                 let now = Instant::now();
-                if now.duration_since(top.1.0) > self.node_lifetime.expect("lifetime exists if queue does") {
+                if now.duration_since(top.1.0) > *lifetime {
                     self.arena.remove_item(top.0);
                     cache.remove_no_policy(top.0);
                     pq.pop();
@@ -159,9 +156,24 @@ where
     }
 }
 
+impl<K: Copy + Eq + Hash> LruPolicyInner<K> {
+    fn evict<S: BuildHasher, V: Clone + Sync>(&mut self, cache: &LightCache<K, V, S, LruPolicy<K, V>>) {
+        while let Some((idx, _)) = self.arena.tail() {
+            if self.arena.len() > self.capacity {
+                let (_, n) = self.arena.remove(idx);
+                cache.remove_no_policy(n.item());
+                if let Some((_, pq)) = self.expiring.as_mut() {
+                    pq.remove(&n.key);
+                }
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 pub struct LruNode<K> {
     key: K,
-    creation: Instant,
     prev: Option<usize>,
     next: Option<usize>,
 }
@@ -173,7 +185,6 @@ where
     fn new(key: K, prev: Option<usize>, next: Option<usize>) -> Self {
         LruNode {
             key,
-            creation: Instant::now(),
             prev,
             next,
         }
