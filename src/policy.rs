@@ -36,7 +36,7 @@ pub trait Policy<K, V>: Sized {
     }
 }
 
-/// [Prune] controls how entries are expired (not nescessarily evicted) from the cache
+/// [Prune] should control how entries are expired (not nescessarily evicted) from the cache
 pub trait Prune<K, V, P> {
     /// Prune is typically be called before any operation on the cahce
     ///

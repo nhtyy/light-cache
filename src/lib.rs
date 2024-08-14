@@ -6,7 +6,7 @@
 //! # Policy Implementers
 //! LightCache is designed to be flexible and allow for custom policies to be implemented.
 //! If you want to implement your own policy, you should implement the [`crate::Policy`] trait.
-//! And you must use the [`cache::NoPolicy`] in your implementation to access the policy free cache methods.
+//! And you must use the [`cache::NoPolicy`] trait in your implementation to access the policy free cache methods.
 //! Using [`LightCache::get`] or any other method that doesnt end in `_no_policy` will cause cause an infinite loop.
 //! 
 //! Another thing to possibly note is that any task using async insertion methods ([`LightCache::get_or_insert`], [`LightCache::get_or_try_insert`], etc)
@@ -16,7 +16,7 @@ pub mod cache;
 #[doc(inline)]
 pub use cache::LightCache;
 
-/// The underlying map used by LightCache. Desinged to be fast and non-blocking for connurrent r/w.
+/// The underlying map used by LightCache. Desinged to be fast and non-blocking for conncurrent r/w.
 pub mod map;
 #[doc(inline)]
 pub use map::LightMap;
