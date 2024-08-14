@@ -110,6 +110,7 @@ where
     K: Copy + Eq + Hash,
     V: Clone + Sync,
 {
+    #[inline]
     fn prune<S: BuildHasher>(&mut self, cache: &LightCache<K, V, S, LruPolicy<K, V>>) {
         if let Some((_, pq)) = self.expiring.as_mut() {
             while let Some((key, expiry)) = pq.peek() {
@@ -126,6 +127,7 @@ where
 }
 
 impl<K: Copy + Eq + Hash> LruPolicyInner<K> {
+    #[inline]
     fn evict<S: BuildHasher, V: Clone + Sync>(&mut self, cache: &LightCache<K, V, S, LruPolicy<K, V>>) {
         if self.arena.len() > self.capacity {
             // were called after every insert, so there should never be more than one item to evict
