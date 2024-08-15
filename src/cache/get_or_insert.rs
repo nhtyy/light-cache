@@ -2,7 +2,6 @@ use std::future::Future;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 use std::pin::Pin;
-use std::sync::MutexGuard;
 use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
@@ -11,6 +10,7 @@ use crate::map::Shard;
 use crate::map::Wakers;
 use crate::policy::Policy;
 
+use parking_lot::MutexGuard;
 use hashbrown::HashMap;
 use pin_project::pinned_drop;
 
@@ -186,7 +186,7 @@ where
 
         match project {
             GetOrTryInsertFutureInnerProj::Working { shard, key, .. } => {
-                let mut lock = shard.waiters.lock().expect("waiters lock not poisoned");
+                let mut lock = shard.waiters.lock();
 
                 if let Some(node) = lock.get_mut(key) {
                     // if we hit this branch than we panicked and we didnt finish insertion
@@ -224,7 +224,7 @@ where
                     joined,
                 } => {
                     // take the lock to make sure no one else is trying to insert the value
-                    let mut waiters_lock = shard.waiters.lock().expect("waiters lock not poisoned");
+                    let mut waiters_lock = shard.waiters.lock();
                     if let Some(value) = shard.get(key, *hash) {
                         return Poll::Ready(InnerComplete::Got(value));
                     }
@@ -272,7 +272,7 @@ where
                     fut,
                 } => match fut.poll(cx) {
                     Poll::Ready(out) => {
-                        let lock = shard.waiters.lock().expect("waiters lock not poisoned");
+                        let lock = shard.waiters.lock();
                         if let Some(value) = shard.get(key, *hash) {
                             return Poll::Ready(InnerComplete::Got(value));
                         }

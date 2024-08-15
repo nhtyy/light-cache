@@ -1,7 +1,7 @@
 pub mod builder;
 
+use parking_lot::{Mutex, RwLock, RwLockWriteGuard};
 use std::hash::{BuildHasher, Hasher};
-use std::sync::{Mutex, RwLock};
 
 use hashbrown::hash_map::{DefaultHashBuilder, HashMap};
 use hashbrown::raw::RawTable;
@@ -20,6 +20,29 @@ pub struct LightMap<K, V, S = DefaultHashBuilder> {
 pub(crate) struct Shard<K, V> {
     pub(crate) waiters: Mutex<HashMap<K, Wakers>>,
     table: RwLock<RawTable<Entry<K, V>>>,
+}
+
+pub struct GetMut<'a, K, V> {
+    key: &'a K,
+    table: RwLockWriteGuard<'a, RawTable<Entry<K, V>>>,
+    hash: u64,
+}
+
+impl<'a, K, V> GetMut<'a, K, V>
+where
+    K: Eq + std::hash::Hash,
+{
+    pub fn apply<F>(mut self, f: F) -> bool
+    where
+        F: FnOnce(&mut V),
+    {
+        if let Some(entry) = self.table.get_mut(self.hash, |e| eq_key(self.key, &e.key)) {
+            f(&mut entry.value);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 struct Entry<K, V> {
@@ -53,7 +76,7 @@ impl<K, V, S: BuildHasher> LightMap<K, V, S> {
 
 impl<K, V, S> LightMap<K, V, S> {
     pub fn len(&self) -> usize {
-        self.shards.iter().map(|s| s.table.read().unwrap().len()).sum()
+        self.shards.iter().map(|s| s.table.read().len()).sum()
     }
 }
 
@@ -73,6 +96,20 @@ where
         let (hash, shard) = self.shard(key).unwrap();
 
         shard.get(key, hash)
+    }
+
+    /// Note: Holding this refrence can block *ALL* operations on this shard
+    /// 
+    /// Its important to never hold this refrence for long periods of time
+    /// espically past an await point
+    pub fn get_mut<'a>(&'a self, key: &'a K) -> GetMut<'a, K, V> {
+        let (hash, shard) = self.shard(key).unwrap();
+
+        GetMut {
+            key,
+            table: shard.table.write(),
+            hash,
+        }
     }
 
     pub fn remove(&self, key: &K) -> Option<V> {
@@ -101,7 +138,7 @@ where
         hash: u64,
         build_hasher: &S,
     ) -> Option<V> {
-        let mut table = self.table.write().expect("table poisoned");
+        let mut table = self.table.write();
 
         match table.find_or_find_insert_slot(
             hash,
@@ -122,7 +159,7 @@ where
     }
 
     pub(crate) fn get(&self, key: &K, hash: u64) -> Option<V> {
-        let table = self.table.read().expect("table poisoned");
+        let table = self.table.read();
 
         table
             .get(hash, |e| eq_key(key, &e.key))
@@ -130,9 +167,11 @@ where
     }
 
     pub(crate) fn remove(&self, key: &K, hash: u64) -> Option<V> {
-        let mut table = self.table.write().expect("table poisoned");
+        let mut table = self.table.write();
 
-        table.remove_entry(hash, |e| eq_key(key, &e.key)).map(|e| e.value)
+        table
+            .remove_entry(hash, |e| eq_key(key, &e.key))
+            .map(|e| e.value)
     }
 }
 

@@ -184,8 +184,7 @@ where
             let mut lock = this
                 .shard
                 .waiters
-                .lock()
-                .expect("waiters lock not poisoned");
+                .lock();
 
             if let Some(node) = lock.get_mut(this.key) {
                 node.remove_worker();
@@ -215,8 +214,7 @@ where
         let mut lock = this
             .shard
             .waiters
-            .lock()
-            .expect("waiters lock not poisoned");
+            .lock();
 
         // lets early return if its already in the cache
         if let Some(value) = this.shard.get(&this.key, *this.hash) {

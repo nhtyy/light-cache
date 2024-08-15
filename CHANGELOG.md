@@ -11,3 +11,7 @@
 # 0.2.5 2024-08-14
     - Docs
     - Remove pub types
+# 0.2.6 2024-08-14
+    - Parking Lot
+    - GetMut on map
+    - Benchmarks

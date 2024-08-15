@@ -3,10 +3,9 @@ use super::{max_parrellism, LightMap, Shard};
 use hashbrown::raw::RawTable;
 use hashbrown::HashMap;
 
-use std::{
-    hash::BuildHasher,
-    sync::{Mutex, RwLock},
-};
+use std::hash::BuildHasher;
+
+use parking_lot::{Mutex, RwLock};
 
 pub struct MapBuilder {
     pub(crate) shards: Option<usize>,
